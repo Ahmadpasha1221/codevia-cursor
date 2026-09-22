@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+.vscode-test/
+*.vsix
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+coverage/
+.vscode/launch.json
+.vscode/tasks.json
+.vscode/settings.json
+.vscode/extensions.json
