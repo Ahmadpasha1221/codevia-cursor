@@ -1,6 +1,6 @@
 import { Agent, configureCursorSdk, type SDKAgent, type SDKAgentInfo, type Run, type SDKMessage, type ToolName, type AgentOptions } from "@cursor/sdk";
 import { CursorAuthError } from "./cursorAuthError";
-import { CursorRunMessage } from "../agent/cursorRunMessage";
+import { CursorRunMessage, extractTextContent } from "../agent/cursorRunMessage";
 
 export interface CursorAgentRun {
   runId: string;
@@ -20,6 +20,51 @@ export class CursorClient {
   constructor(apiKey: string | undefined) {
     this.apiKey = apiKey;
     configureCursorSdk({});
+  }
+
+  hasApiKey(): boolean {
+    return typeof this.apiKey === "string" && this.apiKey.length > 0;
+  }
+
+  setApiKey(apiKey: string | undefined): void {
+    this.apiKey = apiKey;
+  }
+
+  async validateConnection(workspacePath: string): Promise<string> {
+    if (!this.hasApiKey()) {
+      throw new CursorAuthError("No Cursor API key found", 401);
+    }
+
+    const agent = await this.createAgent({
+      name: "codevia-key-check",
+      workspacePath,
+    });
+
+    try {
+      const run = await this.sendMessage(agent.agentId, "Reply with the single word: pong");
+      let text = "";
+
+      for await (const message of this.streamRunMessages(run)) {
+        if (message.kind === "assistant") {
+          const piece = extractTextContent(message);
+          if (piece) {
+            text = text.length > 0 ? `${text}\n${piece}` : piece;
+          }
+        }
+      }
+
+      const result = await this.waitRun(run);
+      if (result.status === "error" || result.status === "cancelled") {
+        throw new CursorAuthError("Cursor rejected the API key or the validation run failed", 401);
+      }
+
+      return text.trim().length > 0 ? text.trim() : "Connected to Cursor.";
+    } finally {
+      const closable = agent as SDKAgent & { close?: () => Promise<void> | void };
+      if (typeof closable.close === "function") {
+        await closable.close();
+      }
+    }
   }
 
   async createAgent(name: string, workspacePath: string): Promise<SDKAgent>;
@@ -130,7 +175,11 @@ export class CursorClient {
       return error;
     }
 
-    const message = error instanceof Error ? error.message : String(error);
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = sanitizeSdkError(raw);
+    if (/invalid|unauthor|401|403|expired|api key|not supported/i.test(raw)) {
+      return new CursorAuthError(message, 401);
+    }
     return new Error(`Cursor SDK error in ${operation}: ${message}`);
   }
 
@@ -158,4 +207,12 @@ export class CursorClient {
         return { kind: "unknown", message };
     }
   }
+}
+
+function sanitizeSdkError(message: string): string {
+  const redacted = message.replace(/(?:cursor_|crsr_|key-)[A-Za-z0-9_-]{8,}/gi, "[REDACTED]");
+  if (/invalid|unauthor|401|403|expired|api key|not supported/i.test(redacted)) {
+    return "Cursor rejected this API key. Check that the key is valid, not expired, and that your plan includes the Cursor SDK.";
+  }
+  return redacted;
 }
