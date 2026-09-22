@@ -4,6 +4,7 @@ import { Logger } from "./utils/logger";
 import { CursorAuthProvider } from "./auth/cursorAuthProvider";
 import { VSCodeSecretStorageAdapter } from "./auth/secretStorage";
 import { CursorClient } from "./auth/cursorClient";
+import { CursorConnectionService } from "./auth/cursorConnection";
 import { AgentManager } from "./agent/agentManager";
 import { SessionStore } from "./session/sessionStore";
 import { MessageRouter } from "./webview/messageRouter";
@@ -19,6 +20,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const secretStorage = new VSCodeSecretStorageAdapter(context.secrets);
   const cursorClient = new CursorClient(undefined);
   const authProvider = new CursorAuthProvider(secretStorage);
+  const getWorkspacePath = (): string => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ".";
+  const connection = new CursorConnectionService(secretStorage, cursorClient, getWorkspacePath);
 
   context.subscriptions.push(
     vscode.authentication.registerAuthenticationProvider(
@@ -39,9 +42,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const agentManager = new AgentManager(cursorClient, sessionStore, permissionManager);
   const messageRouter = new MessageRouter(
     agentManager,
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+    getWorkspacePath(),
+    connection,
+    cursorClient,
   );
-  const agentViewProvider = new AgentViewProvider(context.extensionUri, agentManager, messageRouter);
+  const agentViewProvider = new AgentViewProvider(
+    context.extensionUri,
+    agentManager,
+    messageRouter,
+    connection,
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("codeviaCursor.agent", agentViewProvider, {
@@ -49,7 +59,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  context.subscriptions.push(permissionManager, agentManager);
+  context.subscriptions.push(permissionManager, agentManager, agentViewProvider);
 
   await agentManager.restoreSessions();
 
@@ -60,7 +70,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const openSettingsCommand = vscode.commands.registerCommand(COMMANDS.openSettings, async () => {
     logger.info("Open settings command invoked", { operation: "openSettings" });
-    await vscode.commands.executeCommand("workbench.action.openSettings", "codevia");
+    await vscode.commands.executeCommand("workbench.view.extension.codeviaCursor.agent");
+    agentViewProvider.showSettings();
   });
 
   context.subscriptions.push(openAgentCommand, openSettingsCommand);

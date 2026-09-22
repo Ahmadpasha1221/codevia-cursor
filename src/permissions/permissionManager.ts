@@ -101,8 +101,7 @@ export class PermissionManager implements vscode.Disposable {
     }
 
     if (pending.request.destructive && message.decision === "ALLOW" && message.confirmation !== true) {
-      this.resolve(message.requestId, "denied");
-      return undefined;
+      return this.resolve(message.requestId, "denied");
     }
 
     const status: "allowed" | "denied" = message.decision === "ALLOW" ? "allowed" : "denied";

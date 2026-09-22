@@ -1,11 +1,16 @@
 import { AgentManager } from "../agent/agentManager";
 import { AgentEvent } from "../agent/agentEvents";
+import { CursorAuthError } from "../auth/cursorAuthError";
+import type { CursorConnection } from "../auth/cursorConnection";
+import { CursorClient } from "../auth/cursorClient";
 import { ExtensionMessage, WebviewMessage } from "./types";
 
 export class MessageRouter {
   constructor(
     private readonly agentManager: AgentManager,
     private readonly defaultWorkspacePath = ".",
+    private readonly connection?: CursorConnection,
+    private readonly cursorClient?: CursorClient,
   ) {}
 
   async handleMessage(message: unknown): Promise<unknown> {
@@ -13,6 +18,9 @@ export class MessageRouter {
 
     switch (typed.type) {
       case "SEND_PROMPT": {
+        if (this.cursorClient && !this.cursorClient.hasApiKey()) {
+          throw new CursorAuthError("Connect a Cursor API key before sending a prompt.", 401);
+        }
         await this.agentManager.startTask(typed.sessionId, typed.prompt);
         return { success: true };
       }
@@ -34,10 +42,26 @@ export class MessageRouter {
       }
       case "OPEN_FILE":
       case "APPROVE_PERMISSION":
-      case "DENY_PERMISSION":
-      case "CONNECT_CURSOR":
-      case "DISCONNECT_CURSOR": {
+      case "DENY_PERMISSION": {
         return { success: true };
+      }
+      case "CONNECT_CURSOR": {
+        if (!this.connection) {
+          return { success: true };
+        }
+        return this.connection.connect(typed.apiKey);
+      }
+      case "DISCONNECT_CURSOR": {
+        if (!this.connection) {
+          return { success: true };
+        }
+        return this.connection.disconnect();
+      }
+      case "GET_AUTH_STATUS": {
+        if (!this.connection) {
+          return { type: "AUTH_STATUS", status: "disconnected", hasKey: false };
+        }
+        return this.connection.getStatus();
       }
       default: {
         const _exhaustive: never = typed;
@@ -66,6 +90,12 @@ export class MessageRouter {
         return { type: "AGENT_MESSAGE", message: `Command finished: ${event.command}` };
       case "permission_required":
         return { type: "PERMISSION_REQUEST", requestId: event.requestId, message: event.message };
+      case "agent_permission":
+        return {
+          type: "PERMISSION_REQUEST",
+          requestId: event.request.requestId,
+          message: event.request.description,
+        };
       case "agent_completed":
         return { type: "AGENT_STATE", state: "completed" };
       case "agent_disconnected":
@@ -105,6 +135,7 @@ export class MessageRouter {
         }
         return message as WebviewMessage;
       case "LIST_SESSIONS":
+      case "GET_AUTH_STATUS":
         return message as WebviewMessage;
       case "NEW_SESSION":
         if (
@@ -126,6 +157,10 @@ export class MessageRouter {
         }
         return message as WebviewMessage;
       case "CONNECT_CURSOR":
+        if (typed.apiKey !== undefined && typeof typed.apiKey !== "string") {
+          throw new Error("Invalid CONNECT_CURSOR message");
+        }
+        return message as WebviewMessage;
       case "DISCONNECT_CURSOR":
         return message as WebviewMessage;
       default: {

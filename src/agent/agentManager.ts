@@ -5,7 +5,14 @@ import { AgentSession } from "./agentSession";
 import { AgentEvent } from "./agentEvents";
 import { PermissionManager } from "../permissions/permissionManager";
 import type { Run } from "@cursor/sdk";
-import { extractToolCallInfo, isToolCallMessage } from "./cursorRunMessage";
+import { CursorAuthError } from "../auth/cursorAuthError";
+import {
+  extractTextContent,
+  extractToolCallInfo,
+  isAssistantMessage,
+  isThinkingMessage,
+  isToolCallMessage,
+} from "./cursorRunMessage";
 
 export class AgentManager {
   private readonly sessions = new Map<string, AgentSession>();
@@ -57,6 +64,7 @@ export class AgentManager {
   createSession(workspacePath: string): AgentSession {
     const session: AgentSession = {
       sessionId: crypto.randomUUID(),
+      provider: "cursor",
       workspacePath,
       status: "IDLE",
       createdAt: new Date(),
@@ -113,6 +121,10 @@ export class AgentManager {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
+    if (!this.cursorClient.hasApiKey()) {
+      throw new CursorAuthError("Connect a Cursor API key before sending a prompt.", 401);
+    }
+
     if (session.status === "RUNNING" || session.status === "STARTING") {
       throw new Error(`Session is already running: ${sessionId}`);
     }
@@ -156,6 +168,10 @@ export class AgentManager {
 
       const cancelled = await this.consumeRunMessages(sessionId, run, cancellationToken);
       if (cancelled) {
+        if (session.status !== "CANCELLED") {
+          this.updateSession(sessionId, { status: "CANCELLED" });
+          this.publishEvent({ type: "agent_cancelled", sessionId, timestamp: Date.now() });
+        }
         return;
       }
 
@@ -201,12 +217,34 @@ export class AgentManager {
         return cancelled;
       }
 
+      if (isAssistantMessage(message)) {
+        const text = extractTextContent(message);
+        if (text) {
+          this.publishEvent({ type: "assistant_message", sessionId, message: text, timestamp: Date.now() });
+        }
+        continue;
+      }
+
+      if (isThinkingMessage(message)) {
+        const text = extractTextContent(message);
+        if (text) {
+          this.publishEvent({ type: "agent_thinking", sessionId, message: text, timestamp: Date.now() });
+        }
+        continue;
+      }
+
       if (!isToolCallMessage(message)) {
         continue;
       }
 
       const toolCall = (message.message as { status?: string }).status;
       if (toolCall !== "running") {
+        this.publishEvent({
+          type: "tool_finished",
+          sessionId,
+          toolName: extractToolCallInfo(message)?.toolName ?? "unknown",
+          timestamp: Date.now(),
+        });
         continue;
       }
 
@@ -221,6 +259,13 @@ export class AgentManager {
         info.command,
         info.path,
       );
+
+      this.publishEvent({
+        type: "tool_started",
+        sessionId,
+        toolName: info.toolName,
+        timestamp: Date.now(),
+      });
 
       if (this.permissionManager.isBlockedByTrust(request)) {
         this.publishEvent({
@@ -285,12 +330,13 @@ export class AgentManager {
 
     if (session.status === "RUNNING" || session.status === "STARTING") {
       this.updateSession(sessionId, { status: "CANCELLING" });
+      this.permissionManager.cancelSessionRequests(sessionId);
       const activeRun = this.activeRuns.get(sessionId);
       if (activeRun) {
         try {
           await this.cursorClient.cancelRun(activeRun.run as Parameters<CursorClient["cancelRun"]>[0]);
         } catch {
-          return;
+          // Cancellation is best-effort; pending permissions and session state are still cleaned up.
         }
       }
       this.updateSession(sessionId, { status: "CANCELLED" });
