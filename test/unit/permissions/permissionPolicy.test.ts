@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PermissionPolicy, createDefaultPermissionPolicy } from "../../../src/permissions/permissionPolicy";
+import { createDefaultPermissionPolicy } from "../../../src/permissions/permissionPolicy";
 
 vi.mock("vscode", () => ({
   workspace: { isTrusted: true },
