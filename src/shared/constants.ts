@@ -6,6 +6,8 @@ export const COMMANDS = {
   openSettings: "codeviaCursor.openSettings",
 } as const;
 
+export const API_KEY_SECRET_KEY = "codeviaCursor.token";
+
 export const BRAND_COLOR = "#7C3AED";
 
 export const PERMISSION_DEFAULT_TIMEOUT_MS = 120000;
