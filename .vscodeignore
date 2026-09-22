@@ -3,11 +3,13 @@ test/
 .vscode/
 .github/
 docs/
+gui/
 esbuild.js
 eslint.config.js
 prettier.config.js
 vitest.config.ts
 tsconfig.json
+tsconfig.gui.json
 tsconfig.test.json
 **/*.map
 **/*.test.ts

@@ -1,0 +1,84 @@
+:root {
+  --bg: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+  --fg: var(--vscode-foreground, #cccccc);
+  --border: var(--vscode-panel-border, #3c3c3c);
+  --input-bg: var(--vscode-input-background, #3c3c3c);
+  --input-fg: var(--vscode-input-foreground, #cccccc);
+  --button-bg: var(--vscode-button-background, #7c3aed);
+  --button-fg: var(--vscode-button-foreground, #ffffff);
+  --button-hover: var(--vscode-button-hoverBackground, #8b5cf6);
+  --muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --error: var(--vscode-errorForeground, #f44747);
+  --user-bg: var(--vscode-editor-inactiveSelectionBackground, #2a2d2e);
+  --agent-border: #7c3aed;
+  --card-bg: color-mix(in srgb, var(--bg) 92%, var(--fg));
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, system-ui, sans-serif); font-size: var(--vscode-font-size, 13px); }
+button, input, select, textarea { font: inherit; }
+#app { display: flex; flex-direction: column; height: 100%; min-width: 0; }
+
+.app-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); min-height: 42px; }
+.brand { font-weight: 600; letter-spacing: .02em; }
+.runtime-pill { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn { border: 0; background: transparent; color: var(--muted); padding: 4px 7px; cursor: pointer; }
+.icon-btn:hover { color: var(--fg); background: var(--user-bg); }
+
+.view { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 10px; gap: 8px; }
+.view[hidden] { display: none; }
+
+.setup-banner { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
+.setup-banner span { color: var(--muted); line-height: 1.4; }
+.setup-banner .btn { align-self: flex-start; margin-top: 3px; }
+
+.session-bar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.session-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.session-bar select { flex: 1; min-width: 0; }
+
+.message-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px; }
+.empty-chat { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; text-align: center; color: var(--muted); }
+.empty-chat strong { color: var(--fg); font-size: 15px; }
+.empty-chat span { max-width: 280px; line-height: 1.45; }
+.message { margin: 0 0 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; white-space: pre-wrap; word-break: break-word; }
+.message-user { background: var(--user-bg); }
+.message-agent { border-left: 3px solid var(--agent-border); }
+.message-meta { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.message-thinking { color: var(--muted); font-style: italic; }
+.message-error { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
+
+.composer { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 7px; background: var(--input-bg); }
+.composer textarea { width: 100%; min-height: 62px; max-height: 180px; resize: vertical; padding: 5px; border: 0; outline: none; background: transparent; color: var(--input-fg); }
+.composer textarea:focus { outline: none; }
+.composer-actions { display: flex; gap: 6px; justify-content: flex-end; }
+
+.btn { background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--button-bg); border-radius: 5px; padding: 6px 10px; cursor: pointer; }
+.btn:hover:not(:disabled) { background: var(--button-hover); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-danger { background: transparent; color: var(--error); border-color: var(--error); }
+
+.settings-view { overflow: auto; }
+.settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+h1, h2 { margin: 0; font-weight: 600; }
+h1 { font-size: 15px; }
+h2 { font-size: 13px; margin-bottom: 4px; }
+.hint, .feedback { margin: 0; color: var(--muted); line-height: 1.4; }
+.feedback.is-error { color: var(--error); }
+.settings-section { display: flex; flex-direction: column; gap: 10px; }
+.provider-card { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
+.connection-state, .local-status { color: var(--muted); font-size: 12px; }
+.connection-state.is-connected { color: var(--vscode-testing-iconPassed, #73c991); }
+.connection-state.is-error { color: var(--error); }
+
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 11px; color: var(--muted); }
+.field input, .field select, .select-control, .session-bar select { width: 100%; padding: 7px 8px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--border); border-radius: 4px; }
+.form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+@media (max-width: 360px) {
+  .app-header { padding: 7px; }
+  .view { padding: 8px; }
+  .settings-heading { flex-direction: column; }
+  .settings-heading .btn { align-self: flex-start; }
+}
