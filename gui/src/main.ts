@@ -1,5 +1,4 @@
 import { onHostMessage, postToHost } from "./bridge";
-import { renderStatusBar } from "./components/statusBar";
 import type { HostToGui, RuntimeProvider } from "./protocol";
 import { AppState, createInitialState } from "./state";
 import { renderChatView } from "./views/chatView";
@@ -15,10 +14,8 @@ const settingsView = mustEl("settings-view");
 const chatView = mustEl("chat-view");
 const providerSettings = mustEl("provider-settings");
 const authFeedback = mustEl("auth-feedback");
-const sessionBar = mustEl("session-bar");
 const messageList = mustEl("message-list");
 const composer = mustEl("composer");
-const statusBar = document.createElement("span");
 
 settingsBtn.addEventListener("click", () => {
   state.view = state.view === "settings" ? "chat" : "settings";
@@ -60,9 +57,14 @@ function handleHostMessage(message: HostToGui): void {
       state.localProvider = message.provider;
       state.localModels = message.models;
       state.runtimeError = message.error;
-      if (!state.selectedModelId && message.models[0]) {
-        state.selectedModelId = message.models[0].id;
-        state.selectedModelName = message.models[0].name;
+      if (message.models.length > 0 && !message.error) {
+        state.provider = "local";
+        state.runtimeConnected = true;
+        if (!state.selectedModelId && message.models[0]) {
+          state.selectedModelId = message.models[0].id;
+          state.selectedModelName = message.models[0].name;
+        }
+        ensureSession();
       }
       break;
     case "SHOW_SETTINGS":
@@ -73,8 +75,10 @@ function handleHostMessage(message: HostToGui): void {
       state.activeSessionId = message.activeSessionId ?? message.sessions[0]?.sessionId;
       break;
     case "AGENT_STATE":
-      state.running = message.state === "starting" || message.state === "running";
-      if (["completed", "cancelled", "failed", "disconnected"].includes(message.state)) state.running = false;
+      state.running = message.state === "starting" || message.state === "ready" || message.state === "running";
+      if (["completed", "cancelled", "failed", "disconnected", "idle"].includes(message.state)) {
+        state.running = false;
+      }
       break;
     case "AGENT_MESSAGE":
       state.messages.push({ role: "agent", text: message.message });
@@ -82,18 +86,58 @@ function handleHostMessage(message: HostToGui): void {
     case "AGENT_THINKING":
       state.messages.push({ role: "thinking", text: message.message });
       break;
-    case "AGENT_TOOL_CALL":
-      state.messages.push({ role: "system", text: `Using ${message.toolCall.toolName ?? "tool"}` });
+    case "AGENT_TOOL_CALL": {
+      const command = message.toolCall.command;
+      if (message.toolCall.toolName === "run_command" && command) {
+        state.messages.push({
+          role: "system",
+          text: `Running command:\n$ ${command}`,
+          command: { command, running: true },
+        });
+      } else {
+        state.messages.push({
+          role: "system",
+          text: `Using ${message.toolCall.toolName ?? "tool"}${message.toolCall.path ? ` ${message.toolCall.path}` : ""}`,
+        });
+      }
       break;
+    }
     case "AGENT_TOOL_RESULT":
-      state.messages.push({ role: "system", text: `Completed ${message.result.toolName ?? "tool"}` });
+      state.messages.push({
+        role: "system",
+        text: message.result.error
+          ? `${message.result.toolName ?? "tool"} failed: ${message.result.error}`
+          : `Completed ${message.result.toolName ?? "tool"}`,
+      });
+      break;
+    case "AGENT_COMMAND_OUTPUT":
+      state.messages.push({
+        role: "system",
+        text: formatCommandOutput(message.command, message.stdout, message.stderr, message.exitCode),
+        command: {
+          command: message.command,
+          stdout: message.stdout,
+          stderr: message.stderr,
+          exitCode: message.exitCode,
+          running: false,
+        },
+      });
       break;
     case "AGENT_ERROR":
       state.running = false;
       state.messages.push({ role: "error", text: message.error });
       break;
     case "PERMISSION_REQUEST":
-      state.messages.push({ role: "system", text: message.message });
+      state.messages.push({
+        role: "system",
+        text: message.message,
+        permission: {
+          requestId: message.requestId,
+          command: message.command,
+          pending: true,
+          destructive: message.destructive,
+        },
+      });
       break;
   }
   render();
@@ -106,18 +150,17 @@ function render(): void {
   settingsView.hidden = !showSettings;
   chatView.hidden = showSettings;
 
-  renderStatusBar(statusBar, statusLabel(), state.runtimeConnected, Boolean(state.runtimeError || state.authError));
-
   if (!showSettings) {
     renderSetupBanner();
     renderChatView(
-      { sessionBar, messages: messageList, composer },
+      { messages: messageList, composer },
       state,
       {
-        onSelectSession: (sessionId) => postToHost({ type: "SELECT_SESSION", sessionId }),
-        onNewSession: () => postToHost({ type: "NEW_SESSION" }),
         onSend: sendPrompt,
         onCancel: cancelRun,
+        onRetry: retryLastPrompt,
+        onAllowPermission: (requestId) => resolvePermission(requestId, "ALLOW"),
+        onDenyPermission: (requestId) => resolvePermission(requestId, "DENY"),
       },
     );
   } else {
@@ -139,9 +182,13 @@ function render(): void {
       onLocalConnect: (baseUrl, apiKey, modelId) => {
         state.runtimeError = undefined;
         postToHost({ type: "CONNECT_LOCAL", provider: state.localProvider, baseUrl, apiKey, modelId });
+        state.view = "chat";
+        ensureSession();
       },
       onLocalModel: (modelId) => {
         state.selectedModelId = modelId;
+        state.selectedModelName = modelId;
+        state.lastPrompt = undefined;
         postToHost({ type: "SELECT_LOCAL_MODEL", modelId });
         render();
       },
@@ -184,7 +231,10 @@ function ensureSession(): void {
 }
 
 function renderSetupBanner(): void {
-  const ready = state.runtimeConnected || state.provider === "mock";
+  const ready =
+    state.runtimeConnected
+    || state.provider === "mock"
+    || (state.provider === "local" && Boolean(state.selectedModelId || state.selectedModelName) && !state.runtimeError);
   setupBanner.hidden = ready;
   if (ready) return;
   setupBanner.replaceChildren();
@@ -205,14 +255,32 @@ function renderSetupBanner(): void {
 function sendPrompt(prompt: string): void {
   const trimmed = prompt.trim();
   if (!trimmed || !state.activeSessionId || state.running) return;
+  state.lastPrompt = trimmed;
   state.messages.push({ role: "user", text: trimmed });
   state.running = true;
   postToHost({ type: "SEND_PROMPT", prompt: trimmed, sessionId: state.activeSessionId });
   render();
 }
 
+function retryLastPrompt(): void {
+  if (!state.lastPrompt || !state.activeSessionId || state.running) return;
+  state.messages.push({ role: "system", text: "Trying again with a fresh inference…" });
+  state.running = true;
+  postToHost({ type: "TRY_AGAIN", sessionId: state.activeSessionId });
+  render();
+}
+
 function cancelRun(): void {
   if (state.activeSessionId) postToHost({ type: "CANCEL_RUN", sessionId: state.activeSessionId });
+}
+
+function resolvePermission(requestId: string, decision: "ALLOW" | "DENY"): void {
+  const line = [...state.messages].reverse().find((message) => message.permission?.requestId === requestId);
+  if (line?.permission) {
+    line.permission.pending = false;
+  }
+  postToHost(decision === "ALLOW" ? { type: "APPROVE_PERMISSION", requestId } : { type: "DENY_PERMISSION", requestId });
+  render();
 }
 
 function runtimeLabel(): string {
@@ -221,17 +289,14 @@ function runtimeLabel(): string {
   return "Cursor";
 }
 
-function statusLabel(): string {
-  if (state.running) return "Agent running";
-  if (state.runtimeConnected) return "Ready";
-  if (state.provider === "local") return state.localLoading ? "Detecting local models…" : "Local AI not connected";
-  if (state.provider === "mock") return "Mock runtime";
-  if (state.connecting) return "Connecting to Cursor…";
-  return state.authError ?? "Choose an AI provider";
-}
-
 function mustEl(id: string): HTMLElement {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing element #${id}`);
   return el;
+}
+
+function formatCommandOutput(command: string, stdout: string, stderr: string, exitCode: number | null): string {
+  const output = [stdout, stderr].filter((part) => part.length > 0).join("\n").trim();
+  const code = exitCode === null ? "cancelled" : String(exitCode);
+  return `Running command:\n$ ${command}\n\n${output.length > 0 ? output + "\n\n" : ""}Exit code: ${code}`;
 }

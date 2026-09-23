@@ -3,8 +3,10 @@ export function renderComposer(
   options: {
     disabled: boolean;
     running: boolean;
+    canRetry?: boolean;
     onSend: (prompt: string) => void;
     onCancel: () => void;
+    onRetry?: () => void;
   },
 ): void {
   root.replaceChildren();
@@ -39,6 +41,12 @@ export function renderComposer(
   cancel.textContent = "Cancel";
   cancel.disabled = !options.running;
   cancel.addEventListener("click", options.onCancel);
-  actions.append(send, cancel);
+  const retry = document.createElement("button");
+  retry.className = "btn btn-ghost";
+  retry.type = "button";
+  retry.textContent = "Try Again";
+  retry.disabled = !options.canRetry;
+  retry.addEventListener("click", () => options.onRetry?.());
+  actions.append(send, retry, cancel);
   root.append(textarea, actions);
 }

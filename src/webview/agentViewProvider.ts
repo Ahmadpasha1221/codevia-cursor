@@ -4,6 +4,8 @@ import * as vscode from "vscode";
 import { AgentManager } from "../agent/agentManager";
 import { AgentEvent } from "../agent/agentEvents";
 import type { CursorConnection } from "../auth/cursorConnection";
+import { RuntimeManager } from "../runtime/runtimeManager";
+import type { RuntimeEvent } from "../runtime/runtimeTypes";
 import { MessageRouter } from "./messageRouter";
 import { ExtensionMessage, isExtensionMessage, SessionListItem } from "./types";
 
@@ -11,12 +13,14 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   private view?: vscode.WebviewView;
   private messageSubscription?: vscode.Disposable;
   private eventSubscription?: vscode.Disposable;
+  private runtimeSubscription?: vscode.Disposable;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly agentManager: AgentManager,
     private readonly messageRouter: MessageRouter,
     private readonly connection?: CursorConnection,
+    private readonly runtimeManager?: RuntimeManager,
   ) {}
 
   resolveWebviewView(
@@ -37,7 +41,7 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.messageSubscription = webviewView.webview.onDidReceiveMessage((message: unknown) => {
       this.messageRouter.handleMessage(message).then(
         (result) => {
-          if (isExtensionMessage(result) && result.type === "AUTH_STATUS") {
+          if (isExtensionMessage(result) && shouldForwardResult(result.type)) {
             this.postMessage(result);
           }
           this.postSessionList();
@@ -50,6 +54,14 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 
     this.eventSubscription = this.agentManager.onDidPublishEvent((event: AgentEvent) => {
       const extensionMessage = this.messageRouter.toExtensionMessage(event);
+      if (extensionMessage) {
+        this.postMessage(extensionMessage);
+      }
+      this.postSessionList();
+    });
+
+    this.runtimeSubscription = this.runtimeManager?.onDidPublishEvent((event: RuntimeEvent) => {
+      const extensionMessage = this.messageRouter.toRuntimeExtensionMessage(event);
       if (extensionMessage) {
         this.postMessage(extensionMessage);
       }
@@ -79,16 +91,21 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   private async bootstrapAuth(): Promise<void> {
     if (!this.connection) {
       this.postMessage({ type: "AUTH_STATUS", status: "disconnected", hasKey: false });
+      this.postMessage(this.messageRouter.runtimeStatus());
       return;
     }
 
     this.postMessage({ type: "AUTH_STATUS", status: "connecting", hasKey: false });
     const status = await this.connection.restore();
     this.postMessage(status);
+    this.postMessage(this.messageRouter.runtimeStatus());
   }
 
   private postSessionList(): void {
-    const sessions: SessionListItem[] = this.agentManager.listSessions().map((session) => ({
+    const source = this.messageRouter.usesManagedRuntime() && this.runtimeManager
+      ? this.runtimeManager.listSessions()
+      : this.agentManager.listSessions();
+    const sessions: SessionListItem[] = source.map((session) => ({
       sessionId: session.sessionId,
       status: session.status,
       workspacePath: session.workspacePath,
@@ -98,7 +115,9 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.postMessage({
       type: "SESSION_UPDATED",
       sessions,
-      activeSessionId: this.agentManager.activeSession?.sessionId,
+      activeSessionId: this.messageRouter.usesManagedRuntime()
+        ? this.runtimeManager?.activeSession?.sessionId
+        : this.agentManager.activeSession?.sessionId,
     });
   }
 
@@ -121,9 +140,15 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
   private disposeSubscriptions(): void {
     this.messageSubscription?.dispose();
     this.eventSubscription?.dispose();
+    this.runtimeSubscription?.dispose();
     this.messageSubscription = undefined;
     this.eventSubscription = undefined;
+    this.runtimeSubscription = undefined;
   }
+}
+
+function shouldForwardResult(type: ExtensionMessage["type"]): boolean {
+  return type === "AUTH_STATUS" || type === "RUNTIME_STATUS" || type === "LOCAL_MODELS";
 }
 
 function getNonce(): string {
