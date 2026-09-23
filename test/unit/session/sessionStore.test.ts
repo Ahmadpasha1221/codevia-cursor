@@ -69,6 +69,7 @@ describe("SessionStore", () => {
     const sessions: AgentSession[] = [
       {
         sessionId: "session-1",
+        provider: "cursor",
         workspacePath: "/workspace",
         status: "IDLE",
         createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -81,6 +82,7 @@ describe("SessionStore", () => {
     expect(workspaceState.update).toHaveBeenCalledWith(SESSIONS_KEY, [
       {
         sessionId: "session-1",
+        provider: "cursor",
         workspacePath: "/workspace",
         status: "IDLE",
         createdAt: "2026-01-01T00:00:00.000Z",

@@ -145,4 +145,50 @@ describe("MessageRouter", () => {
     });
     expect(message).toEqual({ type: "AGENT_MESSAGE", message: "pong" });
   });
+
+  it("discovers Ollama models through the runtime manager", async () => {
+    const agentManager = {
+      startTask: vi.fn(),
+      createSession: vi.fn(),
+      cancelTask: vi.fn(),
+    } as unknown as AgentManager;
+    const runtimeManager = {
+      setProvider: vi.fn().mockResolvedValue(undefined),
+      discoverModels: vi.fn().mockResolvedValue([{ id: "qwen2.5:0.5b-instruct", name: "qwen2.5:0.5b-instruct", provider: "ollama" }]),
+      listSessions: vi.fn().mockReturnValue([]),
+      createSession: vi.fn().mockReturnValue({ sessionId: "local-1" }),
+      provider: "ollama",
+    };
+
+    const router = new MessageRouter(agentManager, ".", undefined, undefined, runtimeManager as never);
+    const result = await router.handleMessage({ type: "DISCOVER_LOCAL_MODELS", provider: "ollama" });
+
+    expect(result).toEqual({
+      type: "LOCAL_MODELS",
+      provider: "ollama",
+      models: [{ id: "qwen2.5:0.5b-instruct", name: "qwen2.5:0.5b-instruct", provider: "ollama" }],
+    });
+  });
+
+  it("routes permission decisions to the runtime manager", async () => {
+    const agentManager = {
+      startTask: vi.fn(),
+      createSession: vi.fn(),
+      cancelTask: vi.fn(),
+    } as unknown as AgentManager;
+    const runtimeManager = {
+      resolvePermission: vi.fn(),
+      retryTask: vi.fn().mockResolvedValue(undefined),
+      provider: "ollama",
+    };
+
+    const router = new MessageRouter(agentManager, ".", undefined, undefined, runtimeManager as never);
+    await router.handleMessage({ type: "APPROVE_PERMISSION", requestId: "req-1" });
+    await router.handleMessage({ type: "DENY_PERMISSION", requestId: "req-1" });
+    await router.handleMessage({ type: "TRY_AGAIN", sessionId: "session-1" });
+
+    expect(runtimeManager.resolvePermission).toHaveBeenCalledWith("req-1", "ALLOW");
+    expect(runtimeManager.resolvePermission).toHaveBeenCalledWith("req-1", "DENY");
+    expect(runtimeManager.retryTask).toHaveBeenCalledWith("session-1");
+  });
 });
