@@ -1,5 +1,11 @@
 import * as vscode from "vscode";
 import type { ToolName } from "@cursor/sdk";
+import {
+  DESTRUCTIVE_TOOL_NAMES,
+  EXECUTE_TOOL_NAMES,
+  MODIFY_TOOL_NAMES,
+  READ_TOOL_NAMES,
+} from "../runtime/tools/localToolDefinitions";
 import type { PermissionCategory, PermissionRequest } from "./permissionTypes";
 
 export interface PermissionPolicyOptions {
@@ -33,7 +39,7 @@ export class PermissionPolicy {
       return "DESTRUCTIVE";
     }
 
-    if (normalizedTool === "shell" || normalizedCommand.length > 0) {
+    if (EXECUTE_TOOL_NAMES.has(normalizedTool) || (normalizedCommand.length > 0 && !READ_TOOL_NAMES.has(normalizedTool) && !MODIFY_TOOL_NAMES.has(normalizedTool))) {
       return "EXECUTE";
     }
 
@@ -46,15 +52,19 @@ export class PermissionPolicy {
       return "EXTERNAL";
     }
 
-    if (normalizedTool === "edit" || normalizedTool === "delete" || normalizedTool === "applyAgentDiff") {
+    if (MODIFY_TOOL_NAMES.has(normalizedTool) || normalizedTool === "applyagentdiff") {
       return "MODIFY";
+    }
+
+    if (READ_TOOL_NAMES.has(normalizedTool)) {
+      return "READ";
     }
 
     return "READ";
   }
 
   isDestructive(toolName: string, command: string, _path: string | undefined): boolean {
-    if (Array.from(this.destructiveConfirmations).some((name) => name.toLowerCase() === toolName)) {
+    if (DESTRUCTIVE_TOOL_NAMES.has(toolName) || Array.from(this.destructiveConfirmations).some((name) => name.toLowerCase() === toolName)) {
       return true;
     }
 
@@ -155,7 +165,7 @@ export function createDefaultPermissionPolicy(
     isWorkspaceTrusted: options.isWorkspaceTrusted ?? (() => vscode.workspace.isTrusted),
     autoAllowRead: options.autoAllowRead ?? true,
     autoAllowExternal: options.autoAllowExternal ?? false,
-    destructiveConfirmations: options.destructiveConfirmations ?? new Set(["delete", "applyAgentDiff"]),
+    destructiveConfirmations: options.destructiveConfirmations ?? new Set(["delete", "delete_file", "applyAgentDiff"]),
     defaultTimeoutMs: options.defaultTimeoutMs ?? 120000,
   });
 }

@@ -45,7 +45,10 @@ export class SessionStore {
   }
 
   async saveSessions(sessions: readonly AgentSession[]): Promise<void> {
-    const raw = sessions.map(serializeSession);
+    const existing = this.loadSessions();
+    const incomingProviders = new Set(sessions.map((session) => session.provider));
+    const retained = existing.filter((session) => !incomingProviders.has(session.provider));
+    const raw = [...retained, ...sessions].map(serializeSession);
     await this.workspaceState.update(SESSIONS_STORAGE_KEY, raw);
   }
 
