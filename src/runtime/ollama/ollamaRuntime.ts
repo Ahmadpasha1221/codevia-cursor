@@ -11,9 +11,11 @@ import {
   RuntimeResumeRequest,
   RuntimeSendRequest,
   RuntimeSessionRequest,
+  RuntimeUsage,
 } from "../runtimeTypes";
 import { ChatTurn, runInferenceAgentLoop } from "../tools/inferenceAgentLoop";
-import { ollamaChatTools } from "../tools/toolRegistry";
+import { nativeChatTools } from "../tools/toolRegistry";
+import { availableToolNames, type AgentMode } from "../tools/toolAvailability";
 import { modelSupportsNativeTools } from "../tools/textToolFallback";
 import { parseNativeToolCalls } from "../tools/parseToolCalls";
 
@@ -129,13 +131,35 @@ export class OllamaRuntime implements AgentRuntime {
     this.histories.set(request.sessionId, history);
 
     const nativeTools = modelSupportsNativeTools(modelId);
+    await this.ensureModelSupports(request, modelId);
+    const streamDelta = request.onStreamDelta;
     await runInferenceAgentLoop(
       request,
       history,
-      (messages, signal) => this.completeChat(modelId, messages, signal, nativeTools),
+      (messages, signal) => this.completeChat(modelId, messages, signal, nativeTools, request.mode, streamDelta),
       emit,
-      { nativeTools },
+      { nativeTools, mode: request.mode },
     );
+  }
+
+  /** Capability gate: fail fast with a typed error instead of a confusing upstream failure. */
+  private async ensureModelSupports(request: RuntimeSendRequest, modelId: string): Promise<void> {
+    if (!request.onStreamDelta) {
+      return;
+    }
+    const capabilities = await this.capabilitiesFor(modelId, request.signal);
+    if (capabilities && !capabilities.streaming) {
+      throw new RuntimeError("unsupported_capability", `Model ${modelId} does not support streaming.`, { details: { capability: "streaming", modelId } });
+    }
+  }
+
+  private async capabilitiesFor(modelId: string, signal?: AbortSignal): Promise<RuntimeModel["capabilities"]> {
+    try {
+      const models = await this.discoverModels(signal);
+      return models.find((model) => model.id === modelId)?.capabilities;
+    } catch {
+      return undefined;
+    }
   }
 
   async cancel(_request: RuntimeCancelRequest): Promise<void> {}
@@ -144,14 +168,21 @@ export class OllamaRuntime implements AgentRuntime {
     this.histories.clear();
   }
 
-  private async completeChat(modelId: string, messages: readonly ChatTurn[], signal?: AbortSignal, toolsEnabled = false) {
+  private async completeChat(
+    modelId: string,
+    messages: readonly ChatTurn[],
+    signal?: AbortSignal,
+    toolsEnabled = false,
+    mode?: AgentMode,
+    onDelta?: (text: string) => void,
+  ) {
     const payload: Record<string, unknown> = {
       model: modelId,
       messages,
       stream: true,
     };
     if (toolsEnabled) {
-      payload.tools = ollamaChatTools();
+      payload.tools = nativeChatTools(availableToolNames(mode));
     }
 
     let response = await this.request("/api/chat", {
@@ -179,13 +210,24 @@ export class OllamaRuntime implements AgentRuntime {
     }
 
     let content = "";
+    let usage: RuntimeUsage | undefined;
     const native: unknown[] = [];
+    // Classify-before-render: stream chunks are buffered while a tool protocol
+    // fragment may be open, so partial JSON like {"name":"fin never reaches
+    // the UI. Safe text is released as soon as it is known to be safe.
+    const streamGate = createStreamGate(onDelta);
     try {
       for await (const chunk of readNdjson(response, signal)) {
-        content += extractOllamaContent(chunk);
+        const delta = extractOllamaContent(chunk);
+        streamGate.push(delta);
+        content += delta;
         const calls = extractOllamaToolCalls(chunk);
         if (calls) {
           native.push(...calls);
+        }
+        const chunkUsage = extractOllamaUsage(chunk);
+        if (chunkUsage) {
+          usage = chunkUsage;
         }
       }
     } catch (error) {
@@ -194,10 +236,12 @@ export class OllamaRuntime implements AgentRuntime {
       }
       throw toRuntimeError(error);
     }
+    streamGate.close();
 
     return {
       content,
       nativeToolCalls: parseNativeToolCalls(native),
+      ...(usage ? { usage } : {}),
     };
   }
 
@@ -231,6 +275,103 @@ function extractOllamaToolCalls(chunk: unknown): unknown[] | undefined {
     return message.tool_calls;
   }
   return undefined;
+}
+
+/**
+ * Holds back streamed text while it could be part of a tool object, then
+ * releases only classified-safe text to the UI.
+ */
+export function createStreamGate(onDelta?: (text: string) => void): {
+  push(text: string): void;
+  close(): void;
+} {
+  let buffer = "";
+  let pendingEmit = "";
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const flushPending = (): void => {
+    if (pendingEmit.length > 0 && onDelta) {
+      onDelta(pendingEmit);
+    }
+    pendingEmit = "";
+  };
+
+  return {
+    push(text) {
+      if (text.length === 0) {
+        return;
+      }
+      buffer += text;
+      // Fast path: nothing protocol-like in sight → release immediately.
+      if (!buffer.includes("{") && !buffer.includes("<")) {
+        pendingEmit += buffer;
+        buffer = "";
+        flushPending();
+        return;
+      }
+      // Possible protocol: keep buffering until the object is classified.
+      if (containsCompleteToolObject(buffer)) {
+        // A full tool object arrived — swallow it entirely; the loop will
+        // handle it as a structured call from the final content.
+        buffer = "";
+        return;
+      }
+      if (looksLikeOpenProtocol(buffer)) {
+        // Wait for more chunks before deciding.
+        return;
+      }
+      pendingEmit += buffer;
+      buffer = "";
+      flushPending();
+    },
+    close() {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+      }
+      if (buffer.length > 0) {
+        if (containsCompleteToolObject(buffer)) {
+          // Fully-formed protocol: drop it.
+        } else if (looksLikeOpenProtocol(buffer)) {
+          // Unterminated fragment: release the safe prefix before the '{',
+          // drop the fragment itself.
+          const brace = buffer.lastIndexOf("{");
+          const safePrefix = buffer.slice(0, brace).replace(/<tool_call>[\s\S]*$/i, "");
+          pendingEmit += safePrefix;
+        } else {
+          pendingEmit += buffer;
+        }
+      }
+      buffer = "";
+      flushPending();
+    },
+  };
+}
+
+function looksLikeOpenProtocol(buffer: string): boolean {
+  const openBrace = buffer.lastIndexOf("{");
+  if (openBrace === -1) {
+    return false;
+  }
+  const tail = buffer.slice(openBrace);
+  return /\{\s*"name"\s*:/.test(tail) || /\{\s*"name"\s*$/.test(tail) || /\{\s*$/.test(tail) || /\{\s*"(?:arguments|input|parameters)"/.test(tail) && !tail.includes("}");
+}
+
+function containsCompleteToolObject(buffer: string): boolean {
+  return /\{\s*"name"\s*:\s*"[^"]+"[\s\S]*\}/.test(buffer);
+}
+
+function extractOllamaUsage(chunk: unknown): RuntimeUsage | undefined {
+  if (!isRecord(chunk)) {
+    return undefined;
+  }
+  const prompt = typeof chunk.prompt_eval_count === "number" ? chunk.prompt_eval_count : undefined;
+  const completion = typeof chunk.eval_count === "number" ? chunk.eval_count : undefined;
+  if (prompt === undefined && completion === undefined) {
+    return undefined;
+  }
+  const promptTokens = prompt ?? 0;
+  const completionTokens = completion ?? 0;
+  return { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
 }
 
 function extractOllamaContent(chunk: unknown): string {
