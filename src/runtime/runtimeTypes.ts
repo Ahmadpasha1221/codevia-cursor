@@ -1,4 +1,5 @@
 import type { PermissionRequest } from "../permissions/permissionTypes";
+import type { AgentMode } from "./tools/toolAvailability";
 
 export type RuntimeProvider = "cursor" | "ollama" | "openai-compatible" | "mock";
 
@@ -10,6 +11,28 @@ export interface ModelCapabilities {
   readonly structuredOutput: boolean;
   readonly codeEditing?: boolean;
   readonly reasoning?: boolean;
+}
+
+export interface RuntimeUsage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+  readonly costUsd?: number;
+}
+
+export interface FileChangeSummary {
+  readonly changeId: string;
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly toolName: "write_file" | "edit_file";
+  readonly path: string;
+  readonly status: "APPLIED" | "REVERTED" | "MISSING";
+  readonly beforeExists: boolean;
+  readonly afterExists: boolean;
+  readonly additions: number;
+  readonly deletions: number;
+  readonly hunks: DiffHunk[];
+  readonly appliedAt: number;
 }
 
 export interface RuntimeModel {
@@ -135,12 +158,18 @@ export interface RuntimeSendRequest {
   readonly modelId?: string;
   readonly prompt: string;
   readonly retry?: boolean;
+  /** Current agent mode selecting the available-tool set (defaults to "agent"). */
+  readonly mode?: AgentMode;
   readonly messages?: readonly RuntimeMessage[];
   readonly signal?: AbortSignal;
   readonly onToolCall?: (
     call: RuntimeToolCall,
     signal?: AbortSignal,
   ) => Promise<RuntimeToolCallResponse>;
+  /** Streaming hook: called with each text chunk as it arrives from the model. */
+  readonly onStreamDelta?: (text: string) => void;
+  /** Usage hook: called once per model completion with token counts. */
+  readonly usageSink?: (usage: RuntimeUsage) => void;
 }
 
 export interface RuntimeCancelRequest {
@@ -150,11 +179,20 @@ export interface RuntimeCancelRequest {
   readonly signal?: AbortSignal;
 }
 
+export type DiffHunk = {
+  readonly header: string;
+  readonly lines: Array<{ type: "context" | "add" | "del"; text: string; oldLine?: number; newLine?: number }>;
+};
+
 export type RuntimeEvent =
   | { type: "status"; sessionId: string; status: RuntimeSessionStatus; timestamp: number }
   | { type: "thinking"; sessionId: string; message: string; timestamp: number }
   | { type: "text_delta"; sessionId: string; text: string; timestamp: number }
   | { type: "assistant_message"; sessionId: string; message: string; timestamp: number }
+  | { type: "text_delta"; sessionId: string; text: string; timestamp: number }
+  | { type: "usage"; sessionId: string; usage: RuntimeUsage; timestamp: number }
+  | { type: "file_change"; sessionId: string; change: FileChangeSummary; timestamp: number }
+  | { type: "file_change_reverted"; sessionId: string; change: FileChangeSummary; timestamp: number }
   | { type: "tool_call"; sessionId: string; toolCall: RuntimeToolCall; timestamp: number }
   | { type: "tool_running"; sessionId: string; toolCall: RuntimeToolCall; timestamp: number }
   | { type: "tool_result"; sessionId: string; toolResult: RuntimeToolResult; timestamp: number }

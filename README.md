@@ -16,6 +16,7 @@ This extension is not affiliated with Cursor. Cursor is a trademark of Cursor, I
 * Mock runtime for UI testing without a network model
 * Typed webview messaging and strict CSP
 * Session and task management
+* Chat transcripts persist across restarts — history is restored from local storage without re-sending it to the model, so restoring costs zero tokens
 * Permission handling for destructive operations
 
 ## Requirements

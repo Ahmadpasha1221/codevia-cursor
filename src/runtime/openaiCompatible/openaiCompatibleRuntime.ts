@@ -11,12 +11,24 @@ import {
   RuntimeResumeRequest,
   RuntimeSendRequest,
   RuntimeSessionRequest,
+  RuntimeUsage,
 } from "../runtimeTypes";
 import { ChatTurn, runInferenceAgentLoop } from "../tools/inferenceAgentLoop";
 import { parseNativeToolCalls } from "../tools/parseToolCalls";
-import { ollamaChatTools } from "../tools/toolRegistry";
+import { nativeChatTools } from "../tools/toolRegistry";
+import { availableToolNames, type AgentMode } from "../tools/toolAvailability";
 import { modelSupportsNativeTools } from "../tools/textToolFallback";
 type FetchLike = typeof fetch;
+
+function normalizeOpenAiUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): RuntimeUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : 0;
+  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : 0;
+  const totalTokens = typeof usage.total_tokens === "number" ? usage.total_tokens : promptTokens + completionTokens;
+  return { promptTokens, completionTokens, totalTokens };
+}
 
 export class OpenAICompatibleRuntime implements AgentRuntime {
   readonly provider: RuntimeProvider = "openai-compatible";
@@ -108,13 +120,24 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
     this.histories.set(request.sessionId, history);
 
     const nativeTools = modelSupportsNativeTools(modelId);
+    if (request.onStreamDelta && request.signal?.aborted !== true) {
+      const capabilities = await this.capabilitiesFor(modelId, request.signal).catch(() => undefined);
+      if (capabilities && !capabilities.streaming) {
+        throw new RuntimeError("unsupported_capability", `Model ${modelId} does not support streaming.`, { details: { capability: "streaming", modelId } });
+      }
+    }
     await runInferenceAgentLoop(
       request,
       history,
-      (messages, signal) => this.completeChat(modelId, messages, signal, nativeTools),
+      (messages, signal) => this.completeChat(modelId, messages, signal, nativeTools, request.mode),
       emit,
-      { nativeTools },
+      { nativeTools, mode: request.mode },
     );
+  }
+
+  private async capabilitiesFor(modelId: string, signal?: AbortSignal): Promise<RuntimeModel["capabilities"]> {
+    const models = await this.discoverModels(signal);
+    return models.find((model) => model.id === modelId)?.capabilities;
   }
 
   async cancel(_request: RuntimeCancelRequest): Promise<void> {}
@@ -123,7 +146,7 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
     this.histories.clear();
   }
 
-  private async completeChat(modelId: string, messages: readonly ChatTurn[], signal?: AbortSignal, nativeTools = true) {
+  private async completeChat(modelId: string, messages: readonly ChatTurn[], signal?: AbortSignal, nativeTools = true, mode?: AgentMode) {
     const response = await this.request("/chat/completions", {
       method: "POST",
       signal,
@@ -132,7 +155,7 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
         model: modelId,
         messages,
         stream: false,
-        ...(nativeTools ? { tools: ollamaChatTools() } : {}),
+        ...(nativeTools ? { tools: nativeChatTools(availableToolNames(mode)) } : {}),
       }),
     });
 
@@ -142,11 +165,14 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
 
     const payload = (await response.json()) as {
       choices?: Array<{ message?: { content?: string; tool_calls?: unknown } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
     };
     const message = payload.choices?.[0]?.message;
+    const usage = normalizeOpenAiUsage(payload.usage);
     return {
       content: message?.content ?? "",
       nativeToolCalls: parseNativeToolCalls(message?.tool_calls),
+      ...(usage ? { usage } : {}),
     };
   }
 

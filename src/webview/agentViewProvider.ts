@@ -148,7 +148,7 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 }
 
 function shouldForwardResult(type: ExtensionMessage["type"]): boolean {
-  return type === "AUTH_STATUS" || type === "RUNTIME_STATUS" || type === "LOCAL_MODELS";
+  return type === "AUTH_STATUS" || type === "RUNTIME_STATUS" || type === "LOCAL_MODELS" || type === "TRANSCRIPT";
 }
 
 function getNonce(): string {

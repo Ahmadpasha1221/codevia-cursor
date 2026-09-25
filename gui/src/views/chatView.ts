@@ -1,32 +1,24 @@
-import { renderComposer } from "../components/composer";
-import { renderMessageList } from "../components/messageList";
+import type { ComposerHandle } from "../components/composer";
 import type { AppState } from "../state";
 
+/**
+ * The chat view owns no DOM of its own anymore: the composer and message list
+ * are persistent components updated in place, so re-renders never destroy the
+ * elements the user is interacting with.
+ */
 export function renderChatView(
-  roots: { messages: HTMLElement; composer: HTMLElement },
+  roots: { composer: ComposerHandle },
   state: AppState,
-  handlers: {
-    onSend: (prompt: string) => void;
-    onCancel: () => void;
-    onRetry?: () => void;
-    onAllowPermission?: (requestId: string) => void;
-    onDenyPermission?: (requestId: string) => void;
-  },
+  _handlers: Record<string, never>,
 ): void {
   const ready =
     state.runtimeConnected
     || state.provider === "mock"
     || (state.provider === "local" && Boolean(state.selectedModelId) && !state.runtimeError);
-  renderMessageList(roots.messages, state.messages, {
-    onAllowPermission: handlers.onAllowPermission,
-    onDenyPermission: handlers.onDenyPermission,
-  });
-  renderComposer(roots.composer, {
+  roots.composer.update({
     disabled: !ready || !state.activeSessionId,
     running: state.running,
     canRetry: Boolean(state.lastPrompt) && !state.running,
-    onSend: handlers.onSend,
-    onCancel: handlers.onCancel,
-    onRetry: handlers.onRetry,
+    readyForInput: ready,
   });
 }

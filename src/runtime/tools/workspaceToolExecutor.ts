@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { RuntimeToolCall, RuntimeToolExecutor, RuntimeToolExecutorContext } from "../runtimeTypes";
 import { runWorkspaceCommand } from "./commandRunner";
-import { isLocalToolName, type LocalToolName } from "./localToolDefinitions";
+import { isLocalToolName, type LocalToolName } from "./toolRegistry";
 import { pathExists, resolveWorkspacePath } from "./workspacePath";
 
 const SEARCH_SKIP = new Set([".git", "node_modules", "dist", "out", ".vscode"]);
@@ -55,6 +55,8 @@ export class WorkspaceToolExecutor implements RuntimeToolExecutor {
         return this.deleteFile(workspacePath, requiredString(input, "path"));
       case "run_command":
         return this.runCommand(workspacePath, requiredString(input, "command"), stringField(input, "cwd"), numberField(input, "timeoutMs"), context.signal);
+      default:
+        throw new Error(`Unknown tool: ${name}`);
     }
   }
 

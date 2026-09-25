@@ -22,6 +22,7 @@ export type GuiToHost =
   | { type: "DISCONNECT_CURSOR" }
   | { type: "GET_AUTH_STATUS" }
   | { type: "LIST_SESSIONS" }
+  | { type: "GET_TRANSCRIPT"; sessionId: string }
   | { type: "GET_RUNTIME_STATUS" }
   | { type: "SELECT_RUNTIME"; provider: RuntimeProvider; modelId?: string }
   | { type: "DISCOVER_LOCAL_MODELS"; provider?: LocalProvider }
@@ -29,7 +30,10 @@ export type GuiToHost =
   | { type: "SELECT_LOCAL_MODEL"; modelId: string }
   | { type: "USE_MOCK_RUNTIME" }
   | { type: "APPROVE_PERMISSION"; requestId: string }
-  | { type: "DENY_PERMISSION"; requestId: string };
+  | { type: "DENY_PERMISSION"; requestId: string }
+  | { type: "OPEN_DIFF"; changeId: string }
+  | { type: "RESOLVE_FILE_CHANGE"; changeId: string; decision: "ACCEPT" | "REJECT" }
+  | { type: "OPEN_FILE"; path: string };
 
 export interface SessionListItem {
   sessionId: string;
@@ -38,9 +42,23 @@ export interface SessionListItem {
   currentTask?: string;
 }
 
+export interface FileChangeView {
+  changeId: string;
+  toolName: string;
+  path: string;
+  status: "APPLIED" | "REVERTED" | "MISSING";
+  additions: number;
+  deletions: number;
+  isNewFile: boolean;
+}
+
 export type HostToGui =
   | { type: "AGENT_STATE"; state: string }
   | { type: "AGENT_MESSAGE"; message: string }
+  | { type: "AGENT_TEXT_DELTA"; sessionId: string; text: string }
+  | { type: "AGENT_USAGE"; promptTokens: number; completionTokens: number; totalTokens: number; costUsd?: number }
+  | { type: "FILE_CHANGE"; change: FileChangeView }
+  | { type: "FILE_CHANGE_REVERTED"; change: FileChangeView }
   | { type: "AGENT_THINKING"; message: string }
   | { type: "AGENT_TOOL_CALL"; toolCall: { toolName?: string; command?: string; path?: string } }
   | { type: "AGENT_TOOL_RESULT"; result: { toolName?: string; error?: string } }
@@ -51,4 +69,20 @@ export type HostToGui =
   | { type: "AUTH_STATUS"; status: AuthStatus; hasKey: boolean; error?: string; message?: string }
   | { type: "RUNTIME_STATUS"; provider: RuntimeProvider; connected: boolean; modelId?: string; modelName?: string; localProvider?: LocalProvider; error?: string }
   | { type: "LOCAL_MODELS"; provider: LocalProvider; models: LocalModel[]; error?: string }
-  | { type: "SHOW_SETTINGS" };
+  | { type: "SHOW_SETTINGS" }
+  | {
+      type: "TRANSCRIPT";
+      sessionId: string;
+      entries: Array<{
+        kind: "user" | "assistant" | "thinking" | "tool" | "command" | "error" | "system";
+        text: string;
+        timestamp: number;
+        toolName?: string;
+        command?: string;
+        path?: string;
+        stdout?: string;
+        stderr?: string;
+        exitCode?: number | null;
+        error?: string;
+      }>;
+    };

@@ -4,6 +4,7 @@ import { SessionStore } from "../session/sessionStore";
 import { AgentSession } from "./agentSession";
 import { AgentEvent } from "./agentEvents";
 import { PermissionManager } from "../permissions/permissionManager";
+import type { TranscriptEntry, TranscriptStore } from "../session/transcriptStore";
 import type { Run } from "@cursor/sdk";
 import { CursorAuthError } from "../auth/cursorAuthError";
 import {
@@ -27,7 +28,12 @@ export class AgentManager {
     private readonly cursorClient: CursorClient,
     private readonly sessionStore: SessionStore,
     private readonly permissionManager: PermissionManager,
+    private readonly transcriptStore?: TranscriptStore,
   ) {}
+
+  async loadTranscript(sessionId: string): Promise<TranscriptEntry[]> {
+    return this.transcriptStore?.load(sessionId) ?? [];
+  }
 
   async restoreSessions(): Promise<void> {
     const loaded = this.sessionStore.loadSessions();
@@ -111,6 +117,11 @@ export class AgentManager {
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = undefined;
     }
+    try {
+      await this.transcriptStore?.delete(sessionId);
+    } catch {
+      // Transcript cleanup is best-effort.
+    }
     this.enqueuePersistence();
   }
 
@@ -139,6 +150,7 @@ export class AgentManager {
     }
 
     this.updateSession(sessionId, { status: "STARTING", currentTask: prompt });
+    void this.recordTranscript(sessionId, { kind: "user", text: prompt, timestamp: Date.now() });
     this.publishEvent({ type: "agent_started", sessionId, timestamp: Date.now() });
 
     let agentId: string;
@@ -206,6 +218,14 @@ export class AgentManager {
    * auto-allowed operations continue, and denied/cancelled/timed-out
    * operations cause the whole run to be cancelled.
    */
+  private async recordTranscript(sessionId: string, entry: TranscriptEntry): Promise<void> {
+    try {
+      await this.transcriptStore?.append(sessionId, entry);
+    } catch {
+      // Transcript persistence must never break an agent run.
+    }
+  }
+
   private async consumeRunMessages(
     sessionId: string,
     run: Run,
@@ -223,6 +243,7 @@ export class AgentManager {
       if (isAssistantMessage(message)) {
         const text = extractTextContent(message);
         if (text) {
+          void this.recordTranscript(sessionId, { kind: "assistant", text, timestamp: Date.now() });
           this.publishEvent({ type: "assistant_message", sessionId, message: text, timestamp: Date.now() });
         }
         continue;
@@ -231,6 +252,7 @@ export class AgentManager {
       if (isThinkingMessage(message)) {
         const text = extractTextContent(message);
         if (text) {
+          void this.recordTranscript(sessionId, { kind: "thinking", text, timestamp: Date.now() });
           this.publishEvent({ type: "agent_thinking", sessionId, message: text, timestamp: Date.now() });
         }
         continue;
@@ -255,6 +277,15 @@ export class AgentManager {
       if (!info) {
         continue;
       }
+
+      void this.recordTranscript(sessionId, {
+        kind: "tool",
+        text: `Using ${info.toolName}`,
+        timestamp: Date.now(),
+        toolName: info.toolName,
+        ...(info.command ? { command: info.command } : {}),
+        ...(info.path ? { path: info.path } : {}),
+      });
 
       const request = this.permissionManager.buildRequest(
         sessionId,

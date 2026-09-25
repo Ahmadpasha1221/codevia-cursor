@@ -1,5 +1,6 @@
 import type { RuntimeToolCall, RuntimeToolCallResponse, RuntimeToolExecutor, RuntimeToolExecutorContext } from "../runtimeTypes";
-import { getRegisteredTool } from "./toolRegistry";
+import { availableToolNames, DEFAULT_AGENT_MODE, type AgentMode } from "./toolAvailability";
+import { getRegisteredTool, listAvailableToolNames } from "./toolRegistry";
 
 export type AuthorizeTool = (
   call: RuntimeToolCall,
@@ -13,10 +14,21 @@ export class ToolRouter {
     call: RuntimeToolCall,
     context: RuntimeToolExecutorContext,
     authorize: AuthorizeTool,
+    options: { mode?: AgentMode } = {},
   ): Promise<RuntimeToolCallResponse> {
+    const mode = options.mode ?? DEFAULT_AGENT_MODE;
+    const allowed = new Set(availableToolNames(mode));
+
     const tool = getRegisteredTool(call.name);
-    if (!tool) {
-      return failure(call.name, `Unknown tool: ${call.name}`, false);
+    if (!tool || !allowed.has(call.name)) {
+      // Structured error back to the model (never executed, never chat):
+      // names the problem and lists the current available-tool set so the
+      // model can retry with a valid tool.
+      const availableList = listAvailableToolNames(availableToolNames(mode)).join("\n");
+      const error = tool
+        ? `Tool not available: ${call.name}. Available tools:\n${availableList}`
+        : `Unknown tool: ${call.name}. Available tools:\n${availableList}`;
+      return failure(call.name, error, false);
     }
 
     const input = isRecord(call.input) ? call.input : {};
