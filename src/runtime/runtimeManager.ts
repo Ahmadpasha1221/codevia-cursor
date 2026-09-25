@@ -1,11 +1,18 @@
 import * as vscode from "vscode";
+import * as path from "node:path";
 import type { PermissionManager } from "../permissions/permissionManager";
 import type { SessionStore } from "../session/sessionStore";
+import type { TranscriptEntry, TranscriptStore } from "../session/transcriptStore";
 import type { Logger } from "../utils/logger";
 import { ToolRouter } from "./tools/toolRouter";
+import { DEFAULT_AGENT_MODE, type AgentMode } from "./tools/toolAvailability";
+import { FileChangeReviewManager, joinWorkspacePath } from "./review/fileChangeReviewManager";
+import type { DiffViewService } from "./review/diffView";
+import type { RuntimeUsage } from "./runtimeTypes";
 import {
   AgentRuntime,
   CodeviaSession,
+  FileChangeSummary,
   ResolvedRuntimeConfig,
   RuntimeError,
   RuntimeEvent,
@@ -24,6 +31,8 @@ export interface RuntimeManagerOptions {
   readonly logger?: Pick<Logger, "info" | "warn" | "error">;
   readonly toolExecutor?: RuntimeToolExecutor;
   readonly defaultWorkspacePath?: string;
+  readonly transcriptStore?: TranscriptStore;
+  readonly diffView?: DiffViewService;
 }
 
 interface ActiveRun {
@@ -42,6 +51,8 @@ export class RuntimeManager implements vscode.Disposable {
   private activeSessionId?: string;
   private readonly lastPrompts = new Map<string, string>();
   private readonly toolRouter: ToolRouter;
+  private readonly reviewManager = new FileChangeReviewManager();
+  private readonly usageBySession = new Map<string, RuntimeUsage>();
 
   readonly onDidPublishEvent = this.emitter.event;
 
@@ -51,6 +62,74 @@ export class RuntimeManager implements vscode.Disposable {
     for (const runtime of options.runtimes) {
       this.runtimes.set(runtime.provider, runtime);
     }
+  }
+
+  getUsage(sessionId: string): RuntimeUsage {
+    return this.usageBySession.get(sessionId) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  }
+
+  listFileChanges(sessionId: string): FileChangeSummary[] {
+    return this.reviewManager.listChanges(sessionId);
+  }
+
+  async resolveFileChange(changeId: string, decision: "ACCEPT" | "REJECT" | "VIEW_DIFF"): Promise<FileChangeSummary | undefined> {
+    const change = this.reviewManager.getChange(changeId);
+    if (!change) {
+      return undefined;
+    }
+    if (decision === "VIEW_DIFF") {
+      await this.showFileChangeDiff(changeId);
+      return change;
+    }
+    if (decision === "REJECT") {
+      const workspacePath = this.sessions.get(change.sessionId)?.workspacePath ?? this.options.defaultWorkspacePath ?? ".";
+      const reverted = await this.reviewManager.revert(changeId, workspacePath);
+      this.publishEvent({ type: "file_change_reverted", sessionId: change.sessionId, change: reverted, timestamp: Date.now() });
+      this.recordTranscript(change.sessionId, {
+        kind: "system",
+        text: `Reverted ${reverted.path}`,
+        timestamp: Date.now(),
+        toolName: reverted.toolName,
+        path: reverted.path,
+      });
+      return reverted;
+    }
+    return this.reviewManager.getChange(changeId);
+  }
+
+  async showFileChangeDiff(changeId: string): Promise<void> {
+    const change = this.reviewManager.getChange(changeId);
+    if (!change) {
+      return;
+    }
+    if (this.options.diffView) {
+      await this.options.diffView.showDiff({
+        title: `Agent change: ${change.path}`,
+        beforeExists: change.beforeExists,
+        afterPath: this.absolutePathFor(change.sessionId, change.path),
+      });
+      return;
+    }
+    await this.openFile(change.path);
+  }
+
+  async openFile(relativePath: string): Promise<void> {
+    const sessionId = this.activeSessionId;
+    const absolute = sessionId
+      ? this.absolutePathFor(sessionId, relativePath)
+      : path.resolve(this.options.defaultWorkspacePath ?? ".", relativePath);
+    try {
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
+      await vscode.window.showTextDocument(document, { preview: true });
+    } catch (error) {
+      this.options.logger?.warn("Could not open file", { operation: "openFile" });
+      throw new RuntimeError("unknown", `Could not open ${relativePath}.`, { cause: error });
+    }
+  }
+
+  private absolutePathFor(sessionId: string, relativePath: string): string {
+    const workspacePath = this.sessions.get(sessionId)?.workspacePath ?? this.options.defaultWorkspacePath ?? ".";
+    return joinWorkspacePath(workspacePath, relativePath);
   }
 
   get activeSession(): CodeviaSession | undefined {
@@ -151,6 +230,10 @@ export class RuntimeManager implements vscode.Disposable {
     }
   }
 
+  async loadTranscript(sessionId: string): Promise<TranscriptEntry[]> {
+    return this.options.transcriptStore?.load(sessionId) ?? [];
+  }
+
   createSession(workspacePath = this.options.defaultWorkspacePath ?? "."): CodeviaSession {
     const provider = this.activeProvider ?? this.runtimes.keys().next().value;
     if (!provider) {
@@ -206,6 +289,11 @@ export class RuntimeManager implements vscode.Disposable {
       this.activeSessionId = this.getMostRecentSessionId();
     }
     this.options.permissionManager.cancelSessionRequests(sessionId);
+    try {
+      await this.options.transcriptStore?.delete(sessionId);
+    } catch {
+      // Transcript cleanup is best-effort.
+    }
     this.enqueuePersistence();
   }
 
@@ -263,7 +351,9 @@ export class RuntimeManager implements vscode.Disposable {
     }
 
     this.lastPrompts.set(sessionId, prompt);
+    await this.recordTranscript(sessionId, { kind: "user", text: prompt, timestamp: Date.now() });
 
+    const mode: AgentMode = DEFAULT_AGENT_MODE;
     const runtime = this.getRequiredRuntime(session.provider);
     const controller = new AbortController();
     const cancellationSubscription = cancellationToken?.onCancellationRequested(() => {
@@ -299,8 +389,15 @@ export class RuntimeManager implements vscode.Disposable {
           modelId: session.modelId ?? this.getModelId(session.provider),
           prompt,
           retry,
+          mode,
           signal: controller.signal,
-          onToolCall: (call, signal) => this.handleToolCall(sessionId, call, signal),
+          onToolCall: (call, signal) => this.handleToolCall(sessionId, call, signal, mode),
+          onStreamDelta: (text) => {
+            this.handleRuntimeEvent(sessionId, { type: "text_delta", sessionId, text, timestamp: Date.now() });
+          },
+          usageSink: (usage) => {
+            this.handleRuntimeEvent(sessionId, { type: "usage", sessionId, usage, timestamp: Date.now() });
+          },
         },
         (event) => this.handleRuntimeEvent(sessionId, event),
       );
@@ -424,17 +521,80 @@ export class RuntimeManager implements vscode.Disposable {
     }
   }
 
+  private async recordTranscript(sessionId: string, entry: TranscriptEntry): Promise<void> {
+    try {
+      await this.options.transcriptStore?.append(sessionId, entry);
+    } catch {
+      // Transcript persistence must never break an agent run.
+    }
+  }
+
   private async handleToolCall(
     sessionId: string,
     call: RuntimeToolCall,
     signal?: AbortSignal,
+    mode?: AgentMode,
   ): Promise<RuntimeToolCallResponse> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return { allowed: false, error: `Session not found: ${sessionId}`, result: { success: false, tool: call.name, error: "Session not found." } };
     }
 
-    return this.toolRouter.route(call, { session, signal }, (toolCall, toolSignal) => this.authorizeTool(sessionId, toolCall, toolSignal));
+    await this.captureFileChange(sessionId, call, "begin");
+    const response = await this.toolRouter.route(call, { session, signal }, (toolCall, toolSignal) => this.authorizeTool(sessionId, toolCall, toolSignal), { mode });
+    await this.captureFileChange(sessionId, call, "end", response);
+    return response;
+  }
+
+  /** Records write_file / edit_file mutations for review and revert. */
+  private async captureFileChange(
+    sessionId: string,
+    call: RuntimeToolCall,
+    phase: "begin" | "end",
+    response?: RuntimeToolCallResponse,
+  ): Promise<void> {
+    if (call.name !== "write_file" && call.name !== "edit_file") {
+      return;
+    }
+    if (phase === "end" && (!response || !response.allowed || response.error)) {
+      return;
+    }
+    const input = isRecord(call.input) ? call.input : {};
+    const relativePath = typeof input.path === "string" ? input.path : undefined;
+    if (!relativePath) {
+      return;
+    }
+
+    try {
+      const absolutePath = this.absolutePathFor(sessionId, relativePath);
+      if (phase === "begin") {
+        await this.reviewManager.beginCapture(sessionId, call.id, call.name, absolutePath);
+        return;
+      }
+      const fs = await import("node:fs/promises");
+      const after = await fs.readFile(absolutePath, "utf8");
+      const captured = await this.reviewManager.endCapture(call.id, after);
+      if (captured) {
+        const summary = this.reviewManager.getChange(captured.changeId);
+        if (summary) {
+          this.publishEvent({ type: "file_change", sessionId, change: summary, timestamp: Date.now() });
+        }
+      }
+    } catch {
+      // Review capture is best-effort and must never fail the tool call.
+    }
+  }
+
+  private accumulateUsage(sessionId: string, usage: RuntimeUsage): void {
+    const current = this.usageBySession.get(sessionId) ?? { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    this.usageBySession.set(sessionId, {
+      promptTokens: current.promptTokens + usage.promptTokens,
+      completionTokens: current.completionTokens + usage.completionTokens,
+      totalTokens: current.totalTokens + usage.totalTokens,
+      ...(usage.costUsd !== undefined || current.costUsd !== undefined
+        ? { costUsd: (current.costUsd ?? 0) + (usage.costUsd ?? 0) }
+        : {}),
+    });
   }
 
   private async authorizeTool(
@@ -485,6 +645,12 @@ export class RuntimeManager implements vscode.Disposable {
       return;
     }
 
+    this.recordTranscriptEvent(sessionId, event);
+
+    if (event.type === "usage") {
+      this.accumulateUsage(sessionId, event.usage);
+    }
+
     if (event.type === "status") {
       const status = this.normalizeRuntimeStatus(event.status);
       this.updateSession(sessionId, { status });
@@ -500,6 +666,13 @@ export class RuntimeManager implements vscode.Disposable {
     }
 
     this.publishEvent(event);
+  }
+
+  private recordTranscriptEvent(sessionId: string, event: RuntimeEvent): void {
+    const entry = transcriptEntryFromEvent(event);
+    if (entry) {
+      void this.recordTranscript(sessionId, entry);
+    }
   }
 
   private normalizeRuntimeStatus(status: RuntimeSessionStatus): RuntimeSessionStatus {
@@ -611,6 +784,61 @@ export class RuntimeManager implements vscode.Disposable {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function transcriptEntryFromEvent(event: RuntimeEvent): TranscriptEntry | undefined {
+  const timestamp = event.timestamp;
+  switch (event.type) {
+    case "assistant_message":
+      return { kind: "assistant", text: event.message, timestamp };
+    case "thinking":
+      return { kind: "thinking", text: event.message, timestamp };
+    case "tool_call":
+      return {
+        kind: "tool",
+        text: `Using ${event.toolCall.name}`,
+        timestamp,
+        toolName: event.toolCall.name,
+        ...(isRecord(event.toolCall.input)
+          ? {
+              ...(typeof event.toolCall.input.command === "string" ? { command: event.toolCall.input.command } : {}),
+              ...(typeof event.toolCall.input.path === "string"
+                ? { path: event.toolCall.input.path }
+                : typeof event.toolCall.input.file_path === "string"
+                  ? { path: event.toolCall.input.file_path }
+                  : {}),
+            }
+          : {}),
+      };
+    case "tool_result":
+      return event.toolResult.error
+        ? { kind: "tool", text: `${event.toolResult.name} failed`, timestamp, toolName: event.toolResult.name, error: event.toolResult.error }
+        : undefined;
+    case "command_output":
+      return {
+        kind: "command",
+        text: `$ ${event.command}`,
+        timestamp,
+        command: event.command,
+        stdout: event.stdout,
+        stderr: event.stderr,
+        exitCode: event.exitCode,
+      };
+    case "permission_request":
+      return {
+        kind: "system",
+        text: event.request.description,
+        timestamp,
+        toolName: event.request.toolName,
+        ...(event.request.command ? { command: event.request.command } : {}),
+        ...(event.request.path ? { path: event.request.path } : {}),
+        error: event.request.destructive ? "destructive" : undefined,
+      };
+    case "error":
+      return { kind: "error", text: event.error.message, timestamp };
+    default:
+      return undefined;
+  }
 }
 
 export type { RuntimeToolExecutor } from "./runtimeTypes";
