@@ -4,11 +4,12 @@ import { CursorAuthError } from "../auth/cursorAuthError";
 import type { CursorConnection } from "../auth/cursorConnection";
 import { CursorClient } from "../auth/cursorClient";
 import { RuntimeManager } from "../runtime/runtimeManager";
-import type { RuntimeEvent, RuntimeModel, RuntimeProviderConfig } from "../runtime/runtimeTypes";
+import type { FileChangeSummary, RuntimeEvent, RuntimeModel, RuntimeProviderConfig } from "../runtime/runtimeTypes";
 import { DEFAULT_OLLAMA_BASE_URL } from "../runtime/ollama/ollamaRuntime";
 import {
   AgentState,
   ExtensionMessage,
+  FileChangeView,
   GuiRuntimeProvider,
   LocalProvider,
   WebviewMessage,
@@ -81,8 +82,36 @@ export class MessageRouter {
         }
         return { success: true, sessions: this.agentManager.listSessions() };
       }
+      case "GET_TRANSCRIPT": {
+        if (this.usesManagedRuntime() && this.runtimeManager) {
+          const entries = await this.runtimeManager.loadTranscript(typed.sessionId);
+          return { type: "TRANSCRIPT", sessionId: typed.sessionId, entries };
+        }
+        const entries = await this.agentManager.loadTranscript(typed.sessionId);
+        return { type: "TRANSCRIPT", sessionId: typed.sessionId, entries };
+      }
       case "OPEN_FILE":
+        if (this.runtimeManager) {
+          await this.runtimeManager.openFile(typed.path);
+        }
         return { success: true };
+      case "OPEN_DIFF":
+        if (this.runtimeManager) {
+          await this.runtimeManager.showFileChangeDiff(typed.changeId);
+        }
+        return { success: true };
+      case "RESOLVE_FILE_CHANGE": {
+        if (this.runtimeManager) {
+          const resolved = await this.runtimeManager.resolveFileChange(typed.changeId, typed.decision);
+          if (resolved) {
+            return {
+              type: typed.decision === "REJECT" ? "FILE_CHANGE_REVERTED" : "FILE_CHANGE",
+              change: toFileChangeView(resolved),
+            };
+          }
+        }
+        return { success: true };
+      }
       case "APPROVE_PERMISSION":
       case "DENY_PERMISSION": {
         if (this.runtimeManager) {
@@ -174,6 +203,20 @@ export class MessageRouter {
         return { type: "AGENT_THINKING", message: event.message };
       case "assistant_message":
         return { type: "AGENT_MESSAGE", message: event.message };
+      case "text_delta":
+        return { type: "AGENT_TEXT_DELTA", sessionId: event.sessionId, text: event.text };
+      case "usage":
+        return {
+          type: "AGENT_USAGE",
+          promptTokens: event.usage.promptTokens,
+          completionTokens: event.usage.completionTokens,
+          totalTokens: event.usage.totalTokens,
+          ...(event.usage.costUsd !== undefined ? { costUsd: event.usage.costUsd } : {}),
+        };
+      case "file_change":
+        return { type: "FILE_CHANGE", change: toFileChangeView(event.change) };
+      case "file_change_reverted":
+        return { type: "FILE_CHANGE_REVERTED", change: toFileChangeView(event.change) };
       case "tool_call":
         return {
           type: "AGENT_TOOL_CALL",
@@ -368,6 +411,11 @@ export class MessageRouter {
       case "GET_RUNTIME_STATUS":
       case "USE_MOCK_RUNTIME":
         return message as WebviewMessage;
+      case "GET_TRANSCRIPT":
+        if (typeof typed.sessionId !== "string") {
+          throw new Error("Invalid GET_TRANSCRIPT message");
+        }
+        return message as WebviewMessage;
       case "NEW_SESSION":
         if (typed.workspacePath !== undefined && typeof typed.workspacePath !== "string") {
           throw new Error("Invalid NEW_SESSION message");
@@ -376,6 +424,19 @@ export class MessageRouter {
       case "OPEN_FILE":
         if (typeof typed.path !== "string") {
           throw new Error("Invalid OPEN_FILE message");
+        }
+        return message as WebviewMessage;
+      case "OPEN_DIFF":
+        if (typeof typed.changeId !== "string") {
+          throw new Error("Invalid OPEN_DIFF message");
+        }
+        return message as WebviewMessage;
+      case "RESOLVE_FILE_CHANGE":
+        if (
+          typeof typed.changeId !== "string"
+          || (typed.decision !== "ACCEPT" && typed.decision !== "REJECT")
+        ) {
+          throw new Error("Invalid RESOLVE_FILE_CHANGE message");
         }
         return message as WebviewMessage;
       case "APPROVE_PERMISSION":
@@ -444,6 +505,18 @@ function toLocalModel(model: RuntimeModel): { id: string; name: string; provider
     id: model.id,
     name: model.name,
     provider: model.provider === "openai-compatible" ? "openai-compatible" : "ollama",
+  };
+}
+
+function toFileChangeView(change: FileChangeSummary): FileChangeView {
+  return {
+    changeId: change.changeId,
+    toolName: change.toolName,
+    path: change.path,
+    status: change.status,
+    additions: change.additions,
+    deletions: change.deletions,
+    isNewFile: !change.beforeExists,
   };
 }
 

@@ -7,6 +7,7 @@ import { CursorClient } from "./auth/cursorClient";
 import { CursorConnectionService } from "./auth/cursorConnection";
 import { AgentManager } from "./agent/agentManager";
 import { SessionStore } from "./session/sessionStore";
+import { TranscriptStore } from "./session/transcriptStore";
 import { MessageRouter } from "./webview/messageRouter";
 import { AgentViewProvider } from "./webview/agentViewProvider";
 import { PermissionManager } from "./permissions/permissionManager";
@@ -16,6 +17,7 @@ import { MockRuntime } from "./runtime/mock/mockRuntime";
 import { OllamaRuntime } from "./runtime/ollama/ollamaRuntime";
 import { OpenAICompatibleRuntime } from "./runtime/openaiCompatible/openaiCompatibleRuntime";
 import { WorkspaceToolExecutor } from "./runtime/tools/workspaceToolExecutor";
+import { DiffViewService } from "./runtime/review/diffView";
 
 const logger = new Logger(EXTENSION_NAME, "INFO");
 
@@ -44,7 +46,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   const sessionStore = new SessionStore(context.workspaceState);
-  const agentManager = new AgentManager(cursorClient, sessionStore, permissionManager);
+  const transcriptStore = new TranscriptStore(context.globalStorageUri);
+  const agentManager = new AgentManager(cursorClient, sessionStore, permissionManager, transcriptStore);
+  const diffView = new DiffViewService();
   const runtimeManager = new RuntimeManager({
     sessionStore,
     permissionManager,
@@ -52,6 +56,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     logger,
     toolExecutor: new WorkspaceToolExecutor(),
     defaultWorkspacePath: getWorkspacePath(),
+    transcriptStore,
+    diffView,
   });
   const messageRouter = new MessageRouter(
     agentManager,
@@ -74,7 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  context.subscriptions.push(permissionManager, agentManager, runtimeManager, agentViewProvider);
+  context.subscriptions.push(permissionManager, agentManager, runtimeManager, diffView, agentViewProvider);
 
   await agentManager.restoreSessions();
   await runtimeManager.restoreSessions();
