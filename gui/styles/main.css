@@ -54,6 +54,22 @@ input:focus, select:focus, textarea:focus {
 .session-label { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .session-bar select { flex: 1; min-width: 0; }
 
+/* History page: one row per previous conversation. */
+.history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.history-item { margin: 0; }
+.history-open {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  background: var(--card-bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 0; padding: 9px 10px; cursor: pointer;
+}
+.history-open:hover:not(:disabled) { border-color: var(--accent); }
+.history-open.is-active { border-color: var(--accent); }
+.history-open:disabled { opacity: .5; cursor: not-allowed; }
+.history-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-meta { color: var(--muted); font-size: 11px; }
+.history-new { align-self: flex-start; margin-top: 4px; }
+
 .message-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px; }
 .empty-chat { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; text-align: center; color: var(--muted); }
 .empty-chat strong { color: var(--fg); font-size: 15px; }
