@@ -54,7 +54,7 @@ export class PermissionPolicy {
   }
 
   isDestructive(toolName: string, command: string, _path: string | undefined): boolean {
-    if (this.destructiveConfirmations.has(toolName)) {
+    if (Array.from(this.destructiveConfirmations).some((name) => name.toLowerCase() === toolName)) {
       return true;
     }
 

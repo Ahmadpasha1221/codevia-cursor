@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { RuntimeProvider } from "../runtime/runtimeTypes";
 import { AgentErrorInfo, AgentSession, AgentStatus } from "../agent/agentSession";
 
 const SESSIONS_STORAGE_KEY = "codeviaCursor.sessions";
@@ -14,6 +15,13 @@ const AGENT_STATUSES: readonly AgentStatus[] = [
   "FAILED",
   "CANCELLED",
   "DISCONNECTED",
+];
+
+const RUNTIME_PROVIDERS: readonly RuntimeProvider[] = [
+  "cursor",
+  "ollama",
+  "openai-compatible",
+  "mock",
 ];
 
 export class SessionStore {
@@ -55,6 +63,9 @@ export class SessionStore {
 
 interface RawSession {
   sessionId: string;
+  provider?: RuntimeProvider;
+  modelId?: string;
+  providerSessionId?: string;
   agentId?: string;
   runId?: string;
   workspacePath: string;
@@ -68,6 +79,9 @@ interface RawSession {
 function serializeSession(session: AgentSession): RawSession {
   return {
     sessionId: session.sessionId,
+    provider: session.provider,
+    modelId: session.modelId,
+    providerSessionId: session.providerSessionId,
     agentId: session.agentId,
     runId: session.runId,
     workspacePath: session.workspacePath,
@@ -89,6 +103,9 @@ function deserializeSession(raw: RawSession): AgentSession | undefined {
 
   return {
     sessionId: raw.sessionId,
+    provider: raw.provider ?? "cursor",
+    modelId: raw.modelId,
+    providerSessionId: raw.providerSessionId,
     agentId: raw.agentId,
     runId: raw.runId,
     workspacePath: raw.workspacePath,
@@ -115,6 +132,18 @@ function isRawSession(value: unknown): value is RawSession {
     return false;
   }
 
+  if (value.provider !== undefined && !isRuntimeProvider(value.provider)) {
+    return false;
+  }
+
+  if (value.modelId !== undefined && typeof value.modelId !== "string") {
+    return false;
+  }
+
+  if (value.providerSessionId !== undefined && typeof value.providerSessionId !== "string") {
+    return false;
+  }
+
   if (value.agentId !== undefined && typeof value.agentId !== "string") {
     return false;
   }
@@ -132,6 +161,10 @@ function isRawSession(value: unknown): value is RawSession {
   }
 
   return true;
+}
+
+function isRuntimeProvider(value: unknown): value is RuntimeProvider {
+  return typeof value === "string" && RUNTIME_PROVIDERS.includes(value as RuntimeProvider);
 }
 
 function isAgentStatus(value: unknown): value is AgentStatus {
