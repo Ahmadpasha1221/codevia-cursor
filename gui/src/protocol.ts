@@ -1,5 +1,5 @@
 export type AuthStatus = "disconnected" | "connecting" | "connected" | "error";
-export type RuntimeProvider = "cursor" | "local" | "mock";
+export type RuntimeProvider = "cursor" | "local" | "mock" | "openrouter";
 export type LocalProvider = "ollama" | "openai-compatible";
 
 export interface LocalModel {
@@ -12,6 +12,16 @@ export interface LocalModel {
   };
 }
 
+/** Discovered model with display metadata (OpenRouter catalog or local). */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  contextWindow?: number;
+  toolCalling?: boolean;
+  vision?: boolean;
+  pricing?: { promptUsdPerMillion?: number; completionUsdPerMillion?: number };
+}
+
 export type GuiToHost =
   | { type: "SEND_PROMPT"; prompt: string; sessionId: string }
   | { type: "TRY_AGAIN"; sessionId: string }
@@ -20,6 +30,10 @@ export type GuiToHost =
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "CONNECT_CURSOR"; apiKey?: string }
   | { type: "DISCONNECT_CURSOR" }
+  | { type: "CONNECT_OPENROUTER"; apiKey: string }
+  | { type: "DISCONNECT_OPENROUTER" }
+  | { type: "DISCOVER_OPENROUTER_MODELS" }
+  | { type: "SELECT_OPENROUTER_MODEL"; modelId: string }
   | { type: "GET_AUTH_STATUS" }
   | { type: "LIST_SESSIONS" }
   | { type: "GET_TRANSCRIPT"; sessionId: string }
@@ -40,6 +54,7 @@ export interface SessionListItem {
   status: string;
   workspacePath: string;
   currentTask?: string;
+  updatedAt?: number;
 }
 
 export interface FileChangeView {
@@ -69,7 +84,9 @@ export type HostToGui =
   | { type: "AUTH_STATUS"; status: AuthStatus; hasKey: boolean; error?: string; message?: string }
   | { type: "RUNTIME_STATUS"; provider: RuntimeProvider; connected: boolean; modelId?: string; modelName?: string; localProvider?: LocalProvider; error?: string }
   | { type: "LOCAL_MODELS"; provider: LocalProvider; models: LocalModel[]; error?: string }
+  | { type: "OPENROUTER_MODELS"; models: ModelInfo[]; error?: string }
   | { type: "SHOW_SETTINGS" }
+  | { type: "SHOW_HISTORY" }
   | {
       type: "TRANSCRIPT";
       sessionId: string;

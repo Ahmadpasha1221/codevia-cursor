@@ -1,7 +1,7 @@
 import type { FileChangeSummary } from "../runtime/runtimeTypes";
 import type { AgentSession } from "../agent/agentSession";
 
-export type GuiRuntimeProvider = "cursor" | "local" | "mock";
+export type GuiRuntimeProvider = "cursor" | "local" | "mock" | "openrouter";
 export type LocalProvider = "ollama" | "openai-compatible";
 
 export type WebviewMessage =
@@ -12,6 +12,10 @@ export type WebviewMessage =
   | { type: "SELECT_SESSION"; sessionId: string }
   | { type: "STOP_AGENT"; sessionId: string }
   | { type: "CONNECT_CURSOR"; apiKey?: string }
+  | { type: "CONNECT_OPENROUTER"; apiKey: string }
+  | { type: "DISCONNECT_OPENROUTER" }
+  | { type: "DISCOVER_OPENROUTER_MODELS" }
+  | { type: "SELECT_OPENROUTER_MODEL"; modelId: string }
   | { type: "DISCONNECT_CURSOR" }
   | { type: "GET_AUTH_STATUS" }
   | { type: "GET_RUNTIME_STATUS" }
@@ -44,7 +48,26 @@ export interface LocalModelInfo {
   provider: LocalProvider;
 }
 
-export type SessionListItem = Pick<AgentSession, "sessionId" | "status" | "workspacePath" | "currentTask">;
+/** Discovered model entry for dropdowns (local or OpenRouter). */
+export interface ModelOption {
+  id: string;
+  name: string;
+  contextWindow?: number;
+  toolCalling?: boolean;
+  vision?: boolean;
+  pricing?: { promptUsdPerMillion?: number; completionUsdPerMillion?: number };
+}
+
+export interface OpenRouterModelListMessage {
+  type: "OPENROUTER_MODELS";
+  models: ModelOption[];
+  error?: string;
+}
+
+export type SessionListItem = Pick<AgentSession, "sessionId" | "status" | "workspacePath" | "currentTask"> & {
+  /** Epoch millis for History page display (optional for compatibility). */
+  updatedAt?: number;
+};
 
 export interface FileChangeView {
   changeId: string;
@@ -81,7 +104,9 @@ export type ExtensionMessage =
       error?: string;
     }
   | { type: "LOCAL_MODELS"; provider: LocalProvider; models: LocalModelInfo[]; error?: string }
+  | OpenRouterModelListMessage
   | { type: "SHOW_SETTINGS" }
+  | { type: "SHOW_HISTORY" }
   | { type: "RUN_STARTED"; runId: string }
   | { type: "RUN_COMPLETED"; runId: string }
   | {

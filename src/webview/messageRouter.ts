@@ -6,12 +6,15 @@ import { CursorClient } from "../auth/cursorClient";
 import { RuntimeManager } from "../runtime/runtimeManager";
 import type { FileChangeSummary, RuntimeEvent, RuntimeModel, RuntimeProviderConfig } from "../runtime/runtimeTypes";
 import { DEFAULT_OLLAMA_BASE_URL } from "../runtime/ollama/ollamaRuntime";
+import type { SecretStorage } from "../auth/secretStorage";
+import { OPENROUTER_API_KEY_SECRET_KEY } from "../shared/constants";
 import {
   AgentState,
   ExtensionMessage,
   FileChangeView,
   GuiRuntimeProvider,
   LocalProvider,
+  ModelOption,
   WebviewMessage,
 } from "./types";
 
@@ -22,11 +25,17 @@ export class MessageRouter {
     private readonly connection?: CursorConnection,
     private readonly cursorClient?: CursorClient,
     private readonly runtimeManager?: RuntimeManager,
+    private readonly openRouterSecrets?: SecretStorage,
   ) {}
 
   usesManagedRuntime(): boolean {
     const provider = this.runtimeManager?.provider;
-    return provider === "ollama" || provider === "openai-compatible" || provider === "mock";
+    return (
+      provider === "ollama"
+      || provider === "openai-compatible"
+      || provider === "openrouter"
+      || provider === "mock"
+    );
   }
 
   async handleMessage(message: unknown): Promise<unknown> {
@@ -125,6 +134,24 @@ export class MessageRouter {
         }
         return this.connection.connect(typed.apiKey);
       }
+      case "CONNECT_OPENROUTER": {
+        if (!this.runtimeManager || !this.openRouterSecrets) {
+          return { type: "RUNTIME_STATUS", provider: "openrouter", connected: false, error: "OpenRouter is not configured." } as ExtensionMessage;
+        }
+        const apiKey = typed.apiKey.trim();
+        if (apiKey.length === 0) {
+          return { type: "RUNTIME_STATUS", provider: "openrouter", connected: false, error: "Enter an OpenRouter API key first." } as ExtensionMessage;
+        }
+        await this.openRouterSecrets.store(OPENROUTER_API_KEY_SECRET_KEY, apiKey);
+        await this.connectOpenRouter(apiKey);
+        return this.openRouterStatus();
+      }
+      case "DISCONNECT_OPENROUTER": {
+        if (this.openRouterSecrets) {
+          await this.openRouterSecrets.delete(OPENROUTER_API_KEY_SECRET_KEY);
+        }
+        return this.openRouterStatus();
+      }
       case "DISCONNECT_CURSOR": {
         if (!this.connection) {
           return { success: true };
@@ -141,6 +168,10 @@ export class MessageRouter {
         return this.runtimeStatus();
       case "SELECT_RUNTIME":
         return this.selectGuiRuntime(typed.provider, typed.modelId);
+      case "DISCOVER_OPENROUTER_MODELS":
+        return this.discoverOpenRouterModels();
+      case "SELECT_OPENROUTER_MODEL":
+        return this.selectOpenRouterModel(typed.modelId);
       case "DISCOVER_LOCAL_MODELS":
         return this.discoverLocalModels(typed.provider ?? "ollama");
       case "CONNECT_LOCAL":
@@ -265,6 +296,9 @@ export class MessageRouter {
   runtimeStatus(error?: string): ExtensionMessage {
     const provider = this.runtimeManager?.provider;
     const config = this.runtimeManager?.getProviderConfig();
+    if (provider === "openrouter") {
+      return this.openRouterStatus(error);
+    }
     if (provider === "ollama" || provider === "openai-compatible") {
       return {
         type: "RUNTIME_STATUS",
@@ -288,6 +322,101 @@ export class MessageRouter {
       type: "RUNTIME_STATUS",
       provider: "cursor",
       connected: this.cursorClient?.hasApiKey() ?? false,
+      ...(error ? { error } : {}),
+    };
+  }
+
+  /** Connects the OpenRouter runtime using the stored API key. */
+  private async connectOpenRouter(apiKey: string): Promise<void> {
+    if (!this.runtimeManager) {
+      return;
+    }
+    const storedModelId = await this.loadSavedOpenRouterModelId();
+    await this.runtimeManager.setProvider({ provider: "openrouter", apiKey, ...(storedModelId ? { modelId: storedModelId } : {}) });
+    if (this.runtimeManager.listSessions().length === 0) {
+      this.runtimeManager.createSession(this.defaultWorkspacePath);
+    }
+  }
+
+  private async loadSavedOpenRouterModelId(): Promise<string | undefined> {
+    const config = this.runtimeManager?.getProviderConfig();
+    return config?.provider === "openrouter" ? config.modelId : undefined;
+  }
+
+  private async discoverOpenRouterModels(): Promise<ExtensionMessage> {
+    if (!this.runtimeManager) {
+      return { type: "OPENROUTER_MODELS", models: [], error: "OpenRouter runtime is not configured." };
+    }
+    const apiKey = await this.resolveOpenRouterApiKey();
+    if (!apiKey) {
+      return { type: "OPENROUTER_MODELS", models: [], error: "Connect OpenRouter with an API key first." };
+    }
+    try {
+      // Switch the active runtime so discovery goes through RuntimeManager.
+      await this.runtimeManager.setProvider({ provider: "openrouter", apiKey, ...(await this.modelIdFor()) });
+      const models = await this.runtimeManager.discoverModels();
+      return { type: "OPENROUTER_MODELS", models: models.map(toModelOption) };
+    } catch (error) {
+      return {
+        type: "OPENROUTER_MODELS",
+        models: [],
+        error: error instanceof Error ? error.message : "Could not list OpenRouter models.",
+      };
+    }
+  }
+
+  private async modelIdFor(): Promise<{ modelId: string } | Record<string, never>> {
+    const config = this.runtimeManager?.getProviderConfig();
+    if (config?.provider === "openrouter" && config.modelId) {
+      return { modelId: config.modelId };
+    }
+    return {};
+  }
+
+  private async selectOpenRouterModel(modelId: string): Promise<ExtensionMessage> {
+    if (!this.runtimeManager) {
+      return this.runtimeStatus("OpenRouter runtime is not configured.");
+    }
+    if (this.runtimeManager.provider !== "openrouter") {
+      const apiKey = await this.resolveOpenRouterApiKey();
+      if (!apiKey) {
+        return { type: "RUNTIME_STATUS", provider: "openrouter", connected: false, error: "Connect OpenRouter with an API key first." };
+      }
+      await this.runtimeManager.setProvider({ provider: "openrouter", apiKey, modelId });
+    } else {
+      await this.runtimeManager.setProvider({ provider: "openrouter", modelId, ...(await this.apiKeyForRuntime()) });
+    }
+    if (this.runtimeManager.listSessions().length === 0) {
+      this.runtimeManager.createSession(this.defaultWorkspacePath);
+    }
+    return this.runtimeStatus();
+  }
+
+  private async apiKeyForRuntime(): Promise<{ apiKey: string } | Record<string, never>> {
+    const config = this.runtimeManager?.getProviderConfig();
+    if (config?.provider === "openrouter" && config.apiKey) {
+      return { apiKey: config.apiKey };
+    }
+    return {};
+  }
+
+  private async resolveOpenRouterApiKey(): Promise<string | undefined> {
+    const config = this.runtimeManager?.getProviderConfig();
+    if (config?.provider === "openrouter" && config.apiKey) {
+      return config.apiKey;
+    }
+    return this.openRouterSecrets?.get(OPENROUTER_API_KEY_SECRET_KEY);
+  }
+
+  private openRouterStatus(error?: string): ExtensionMessage {
+    const config = this.runtimeManager?.getProviderConfig();
+    const connected = this.runtimeManager?.provider === "openrouter" && !error;
+    return {
+      type: "RUNTIME_STATUS",
+      provider: "openrouter",
+      connected,
+      modelId: config?.provider === "openrouter" ? config.modelId : undefined,
+      modelName: config?.provider === "openrouter" ? config.modelId : undefined,
       ...(error ? { error } : {}),
     };
   }
@@ -372,6 +501,19 @@ export class MessageRouter {
     if (provider === "local") {
       return this.discoverLocalModels("ollama");
     }
+    if (provider === "openrouter") {
+      const apiKey = await this.resolveOpenRouterApiKey();
+      if (!apiKey) {
+        return {
+          type: "RUNTIME_STATUS",
+          provider: "openrouter",
+          connected: false,
+          error: "Connect OpenRouter with an API key first.",
+        };
+      }
+      await this.connectOpenRouter(apiKey);
+      return this.openRouterStatus();
+    }
     void modelId;
     return {
       type: "RUNTIME_STATUS",
@@ -452,8 +594,22 @@ export class MessageRouter {
         return message as WebviewMessage;
       case "DISCONNECT_CURSOR":
         return message as WebviewMessage;
+      case "CONNECT_OPENROUTER":
+        if (typeof typed.apiKey !== "string") {
+          throw new Error("Invalid CONNECT_OPENROUTER message");
+        }
+        return message as WebviewMessage;
+      case "DISCONNECT_OPENROUTER":
+        return message as WebviewMessage;
+      case "DISCOVER_OPENROUTER_MODELS":
+        return message as WebviewMessage;
+      case "SELECT_OPENROUTER_MODEL":
+        if (typeof typed.modelId !== "string" || (typed.modelId as string).trim().length === 0) {
+          throw new Error("Invalid SELECT_OPENROUTER_MODEL message");
+        }
+        return message as WebviewMessage;
       case "SELECT_RUNTIME":
-        if (typed.provider !== "cursor" && typed.provider !== "local" && typed.provider !== "mock") {
+        if (typed.provider !== "cursor" && typed.provider !== "local" && typed.provider !== "mock" && typed.provider !== "openrouter") {
           throw new Error("Invalid SELECT_RUNTIME message");
         }
         return message as WebviewMessage;
@@ -497,6 +653,18 @@ function localConfig(
     provider: "ollama",
     baseUrl: baseUrl && baseUrl.length > 0 ? baseUrl : DEFAULT_OLLAMA_BASE_URL,
     ...(modelId ? { modelId } : {}),
+  };
+}
+
+/** Maps a discovered RuntimeModel to the dropdown option shape sent to the GUI. */
+function toModelOption(model: RuntimeModel): ModelOption {
+  return {
+    id: model.id,
+    name: model.name,
+    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+    ...(model.capabilities?.toolCalling !== undefined ? { toolCalling: model.capabilities.toolCalling } : {}),
+    ...(model.capabilities?.vision !== undefined ? { vision: model.capabilities.vision } : {}),
+    ...(model.pricing ? { pricing: model.pricing } : {}),
   };
 }
 
