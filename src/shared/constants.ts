@@ -1,5 +1,6 @@
 export const EXTENSION_ID = "codevia-cursor";
-export const EXTENSION_NAME = "Codevia Cursor";
+/** User-facing product name shown in the UI and logs. */
+export const EXTENSION_NAME = "Spider";
 
 export const COMMANDS = {
   openAgent: "codeviaCursor.openAgent",
@@ -7,6 +8,9 @@ export const COMMANDS = {
 } as const;
 
 export const API_KEY_SECRET_KEY = "codeviaCursor.token";
+
+/** Key in VS Code SecretStorage for the OpenRouter API key (never logged). */
+export const OPENROUTER_API_KEY_SECRET_KEY = "codeviaCursor.openrouter.key";
 
 export const BRAND_COLOR = "#7C3AED";
 

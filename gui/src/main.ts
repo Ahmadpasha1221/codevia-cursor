@@ -2,6 +2,7 @@ import { onHostMessage, postToHost } from "./bridge";
 import type { FileChangeView, HostToGui, RuntimeProvider } from "./protocol";
 import { AppState, ChatLine, createInitialState } from "./state";
 import { createComposer } from "./components/composer";
+import { createHistoryList } from "./components/historyList";
 import { createMessageList } from "./components/messageList";
 import { createSessionBar } from "./components/sessionBar";
 import { renderChatView } from "./views/chatView";
@@ -18,6 +19,10 @@ function isStaleTranscript(sessionId: string): boolean {
 const runtimePill = mustEl("runtime-pill");
 const settingsBtn = mustEl("settings-btn") as HTMLButtonElement;
 const settingsBack = mustEl("settings-back") as HTMLButtonElement;
+const historyBtn = mustEl("history-btn") as HTMLButtonElement;
+const historyBack = mustEl("history-back") as HTMLButtonElement;
+const historyView = mustEl("history-view");
+const historyListRoot = mustEl("history-list");
 const setupBanner = mustEl("setup-banner");
 const settingsView = mustEl("settings-view");
 const chatView = mustEl("chat-view");
@@ -47,12 +52,35 @@ const sessionBar = createSessionBar(sessionBarRoot, {
   },
   onCreate: () => postToHost({ type: "NEW_SESSION" }),
 });
+const historyList = createHistoryList(historyListRoot, {
+  onOpen: (sessionId) => {
+    loadedTranscriptSessionId = sessionId;
+    state.activeSessionId = sessionId;
+    state.view = "chat";
+    postToHost({ type: "SELECT_SESSION", sessionId });
+    postToHost({ type: "GET_TRANSCRIPT", sessionId });
+    render();
+  },
+  onNew: () => {
+    state.view = "chat";
+    postToHost({ type: "NEW_SESSION" });
+    render();
+  },
+});
 
 settingsBtn.addEventListener("click", () => {
   state.view = state.view === "settings" ? "chat" : "settings";
   render();
 });
 settingsBack.addEventListener("click", () => {
+  state.view = "chat";
+  render();
+});
+historyBtn.addEventListener("click", () => {
+  state.view = state.view === "history" ? "chat" : "history";
+  render();
+});
+historyBack.addEventListener("click", () => {
   state.view = "chat";
   render();
 });
@@ -87,6 +115,9 @@ function handleHostMessage(message: HostToGui): void {
       state.selectedModelName = message.modelName;
       state.localProvider = message.localProvider ?? state.localProvider;
       state.runtimeError = message.error;
+      if (message.provider === "openrouter" && message.connected && state.openRouterModels.length === 0 && !state.openRouterLoading) {
+        discoverOpenRouterModels();
+      }
       break;
     case "LOCAL_MODELS":
       state.localLoading = false;
@@ -103,8 +134,25 @@ function handleHostMessage(message: HostToGui): void {
         ensureSession();
       }
       break;
+    case "OPENROUTER_MODELS":
+      state.openRouterLoading = false;
+      state.openRouterModels = message.models;
+      state.runtimeError = message.error;
+      if (message.models.length > 0 && !message.error) {
+        state.provider = "openrouter";
+        state.runtimeConnected = true;
+        if (!state.selectedModelId && message.models[0]) {
+          state.selectedModelId = message.models[0].id;
+          state.selectedModelName = message.models[0].name;
+        }
+        ensureSession();
+      }
+      break;
     case "SHOW_SETTINGS":
       state.view = "settings";
+      break;
+    case "SHOW_HISTORY":
+      state.view = "history";
       break;
     case "SESSION_UPDATED":
       state.sessions = message.sessions;
@@ -261,9 +309,17 @@ function pushesChatLine(message: HostToGui): boolean {
 function render(): void {
   runtimePill.textContent = runtimeLabel();
   settingsBtn.textContent = state.view === "settings" ? "Chat" : "Settings";
+  historyBtn.textContent = state.view === "history" ? "Chat" : "History";
   const showSettings = state.view === "settings";
+  const showHistory = state.view === "history";
   settingsView.hidden = !showSettings;
-  chatView.hidden = showSettings;
+  historyView.hidden = !showHistory;
+  chatView.hidden = showSettings || showHistory;
+
+  if (showHistory) {
+    historyList.update(state.sessions, state.activeSessionId, state.running);
+    return;
+  }
 
   if (!showSettings) {
     renderSetupBanner();
@@ -283,6 +339,29 @@ function render(): void {
         render();
       },
       onCursorDisconnect: () => postToHost({ type: "DISCONNECT_CURSOR" }),
+      onOpenRouterConnect: (apiKey) => {
+        state.openRouterLoading = true;
+        state.runtimeError = undefined;
+        postToHost({ type: "CONNECT_OPENROUTER", apiKey });
+        render();
+      },
+      onOpenRouterDisconnect: () => {
+        state.runtimeConnected = false;
+        state.openRouterModels = [];
+        postToHost({ type: "DISCONNECT_OPENROUTER" });
+        render();
+      },
+      onRefreshOpenRouter: discoverOpenRouterModels,
+      onOpenRouterModel: (modelId) => {
+        state.selectedModelId = modelId;
+        state.selectedModelName = state.openRouterModels.find((model) => model.id === modelId)?.name ?? modelId;
+        postToHost({ type: "SELECT_OPENROUTER_MODEL", modelId });
+        render();
+      },
+      onOpenRouterSearch: (query) => {
+        state.openRouterModelFilter = query;
+        render();
+      },
       onLocalProvider: (provider) => {
         state.localProvider = provider;
         discoverLocalModels();
@@ -319,6 +398,11 @@ function selectProvider(provider: RuntimeProvider): void {
   state.runtimeError = undefined;
   if (provider === "local") {
     discoverLocalModels();
+  } else if (provider === "openrouter") {
+    postToHost({ type: "SELECT_RUNTIME", provider });
+    if (state.hasKey) {
+      discoverOpenRouterModels();
+    }
   } else if (provider === "mock") {
     state.runtimeConnected = true;
     postToHost({ type: "USE_MOCK_RUNTIME" });
@@ -336,6 +420,13 @@ function discoverLocalModels(): void {
   render();
 }
 
+function discoverOpenRouterModels(): void {
+  state.openRouterLoading = true;
+  state.runtimeError = undefined;
+  postToHost({ type: "DISCOVER_OPENROUTER_MODELS" });
+  render();
+}
+
 function ensureSession(): void {
   if (state.sessions.length === 0) postToHost({ type: "NEW_SESSION" });
 }
@@ -344,7 +435,8 @@ function renderSetupBanner(): void {
   const ready =
     state.runtimeConnected
     || state.provider === "mock"
-    || (state.provider === "local" && Boolean(state.selectedModelId || state.selectedModelName) && !state.runtimeError);
+    || (state.provider === "local" && Boolean(state.selectedModelId || state.selectedModelName) && !state.runtimeError)
+    || (state.provider === "openrouter" && Boolean(state.selectedModelId) && !state.runtimeError);
   setupBanner.hidden = ready;
   if (ready) return;
   setupBanner.replaceChildren();
@@ -452,6 +544,10 @@ function toolTranscriptText(entry: {
 
 function runtimeLabel(): string {
   const usage = state.usage && state.usage.totalTokens > 0 ? ` · ${formatUsage(state.usage)}` : "";
+  if (state.provider === "openrouter") {
+    const model = state.selectedModelName ?? state.selectedModelId ?? "OpenRouter";
+    return `OpenRouter · ${model}${usage}`;
+  }
   if (state.provider === "local") {
     const model = state.selectedModelName ? `${state.selectedModelName}` : state.localProvider;
     const caps = capabilityBadge();

@@ -76,6 +76,10 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
     this.postMessage({ type: "SHOW_SETTINGS" });
   }
 
+  showHistory(): void {
+    this.postMessage({ type: "SHOW_HISTORY" });
+  }
+
   postMessage(message: ExtensionMessage): void {
     const promise = this.view?.webview.postMessage(message);
     if (promise) {
@@ -110,6 +114,7 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
       status: session.status,
       workspacePath: session.workspacePath,
       currentTask: session.currentTask,
+      updatedAt: session.updatedAt instanceof Date ? session.updatedAt.getTime() : undefined,
     }));
 
     this.postMessage({
@@ -148,7 +153,14 @@ export class AgentViewProvider implements vscode.WebviewViewProvider, vscode.Dis
 }
 
 function shouldForwardResult(type: ExtensionMessage["type"]): boolean {
-  return type === "AUTH_STATUS" || type === "RUNTIME_STATUS" || type === "LOCAL_MODELS" || type === "TRANSCRIPT";
+  return (
+    type === "AUTH_STATUS"
+    || type === "RUNTIME_STATUS"
+    || type === "LOCAL_MODELS"
+    || type === "OPENROUTER_MODELS"
+    || type === "SHOW_HISTORY"
+    || type === "TRANSCRIPT"
+  );
 }
 
 function getNonce(): string {

@@ -10,6 +10,11 @@ export function renderSettingsView(
     onProvider: (provider: RuntimeProvider) => void;
     onCursorConnect: (apiKey: string) => void;
     onCursorDisconnect: () => void;
+    onOpenRouterConnect: (apiKey: string) => void;
+    onOpenRouterDisconnect: () => void;
+    onRefreshOpenRouter: () => void;
+    onOpenRouterModel: (modelId: string) => void;
+    onOpenRouterSearch: (query: string) => void;
     onLocalProvider: (provider: LocalProvider) => void;
     onRefreshLocal: () => void;
     onLocalConnect: (baseUrl: string, apiKey: string, modelId: string) => void;

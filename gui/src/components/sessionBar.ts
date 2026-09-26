@@ -23,7 +23,7 @@ export function createSessionBar(
 
   const label = document.createElement("span");
   label.className = "session-label";
-  label.textContent = "Session";
+  label.textContent = "History";
 
   const select = document.createElement("select");
 
@@ -45,14 +45,14 @@ export function createSessionBar(
       }
       lastKey = key;
 
-      label.textContent = sessions.length ? "Session" : "New conversation";
+      label.textContent = sessions.length ? "History" : "New conversation";
       select.disabled = disabled || sessions.length === 0;
       create.disabled = disabled;
 
       select.replaceChildren();
       if (sessions.length === 0) {
         const option = document.createElement("option");
-        option.textContent = "No session yet";
+        option.textContent = "No previous conversations";
         option.value = "";
         select.appendChild(option);
       } else {

@@ -28,7 +28,7 @@ export class CursorAuthProvider implements vscode.AuthenticationProvider {
     const session: vscode.AuthenticationSession = {
       id: crypto.randomUUID(),
       accessToken: token,
-      account: { id: "codevia", label: "Codevia Cursor" },
+      account: { id: "codevia", label: "Spider" },
       scopes,
     };
 

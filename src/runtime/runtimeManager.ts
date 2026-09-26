@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "node:path";
 import type { PermissionManager } from "../permissions/permissionManager";
 import type { SessionStore } from "../session/sessionStore";
+import type { PersistedProviderConfig, ProviderConfigStore } from "../session/providerConfigStore";
 import type { TranscriptEntry, TranscriptStore } from "../session/transcriptStore";
 import type { Logger } from "../utils/logger";
 import { ToolRouter } from "./tools/toolRouter";
@@ -33,6 +34,8 @@ export interface RuntimeManagerOptions {
   readonly defaultWorkspacePath?: string;
   readonly transcriptStore?: TranscriptStore;
   readonly diffView?: DiffViewService;
+  /** Persists the selected provider config so restarts restore it. */
+  readonly providerConfigStore?: ProviderConfigStore;
 }
 
 interface ActiveRun {
@@ -155,6 +158,10 @@ export class RuntimeManager implements vscode.Disposable {
     await runtime.configure(config);
     this.activeProvider = config.provider;
     this.activeConfig = config;
+    // Remember the selection (never secrets) so the next start restores it.
+    void this.options.providerConfigStore?.save(config).catch(() => {
+      // Persistence is best-effort; the runtime is already usable.
+    });
     if (this.activeSessionId && "modelId" in config) {
       this.updateSession(this.activeSessionId, { modelId: config.modelId, status: "IDLE", currentTask: undefined });
     }
@@ -180,6 +187,13 @@ export class RuntimeManager implements vscode.Disposable {
       return {
         provider: config.provider,
         baseUrl: config.baseUrl,
+        modelId: config.modelId,
+        ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+      };
+    }
+    if (config.provider === "openrouter") {
+      return {
+        provider: config.provider,
         modelId: config.modelId,
         ...(config.apiKey ? { apiKey: config.apiKey } : {}),
       };
@@ -255,7 +269,7 @@ export class RuntimeManager implements vscode.Disposable {
     this.sessions.set(session.sessionId, session);
     this.activeSessionId = session.sessionId;
     this.enqueuePersistence();
-    this.options.logger?.info("Codevia session created", {
+    this.options.logger?.info("Spider session created", {
       operation: "createSession",
       sessionId: session.sessionId,
     });
@@ -295,6 +309,39 @@ export class RuntimeManager implements vscode.Disposable {
       // Transcript cleanup is best-effort.
     }
     this.enqueuePersistence();
+  }
+
+  /**
+   * Restores the persisted provider configuration (never secrets). Local
+   * providers are applied directly; OpenRouter is returned unapplied so the
+   * caller can re-attach its API key from SecretStorage and skip the restore
+   * entirely when no key is available.
+   */
+  async restoreProviderConfig(): Promise<PersistedProviderConfig | undefined> {
+    const saved = this.options.providerConfigStore?.load();
+    if (!saved) {
+      return undefined;
+    }
+    if (saved.provider === "openrouter") {
+      return saved;
+    }
+    const runtime = this.runtimes.get(saved.provider);
+    if (!runtime) {
+      return undefined;
+    }
+    const config = this.toRuntimeProviderConfig(saved);
+    if (!config) {
+      return undefined;
+    }
+    try {
+      await runtime.configure(config);
+      this.activeProvider = saved.provider;
+      this.activeConfig = config;
+    } catch {
+      // A stale saved config must not break activation; start unconfigured.
+      return undefined;
+    }
+    return saved;
   }
 
   async restoreSessions(): Promise<void> {
@@ -748,6 +795,33 @@ export class RuntimeManager implements vscode.Disposable {
 
   private getMostRecentSessionId(): string | undefined {
     return this.listSessions()[0]?.sessionId;
+  }
+
+  /** Rehydrates a persisted provider config into the tagged union. */
+  private toRuntimeProviderConfig(saved: PersistedProviderConfig): RuntimeProviderConfig | undefined {
+    switch (saved.provider) {
+      case "openai-compatible":
+        return {
+          provider: saved.provider,
+          baseUrl: saved.baseUrl ?? "http://127.0.0.1:1234/v1",
+          modelId: saved.modelId ?? "local-model",
+        };
+      case "ollama":
+        return {
+          provider: saved.provider,
+          ...(saved.baseUrl ? { baseUrl: saved.baseUrl } : {}),
+          ...(saved.modelId ? { modelId: saved.modelId } : {}),
+        };
+      case "openrouter":
+        return {
+          provider: saved.provider,
+          ...(saved.modelId ? { modelId: saved.modelId } : {}),
+        };
+      case "mock":
+        return { provider: saved.provider };
+      default:
+        return undefined;
+    }
   }
 
   private updateSession(sessionId: string, patch: Partial<CodeviaSession>): void {
