@@ -1,3 +1,5 @@
+import type { RuntimeProvider } from "../runtime/runtimeTypes";
+
 export type AgentStatus =
   | "IDLE"
   | "STARTING"
@@ -16,6 +18,9 @@ export interface AgentErrorInfo {
 
 export interface AgentSession {
   readonly sessionId: string;
+  readonly provider: RuntimeProvider;
+  readonly modelId?: string;
+  readonly providerSessionId?: string;
   agentId?: string;
   runId?: string;
   workspacePath: string;
