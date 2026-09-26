@@ -1,6 +1,6 @@
-import type { AuthStatus, FileChangeView, LocalModel, LocalProvider, RuntimeProvider, SessionListItem } from "./protocol";
+import type { AuthStatus, FileChangeView, LocalModel, LocalProvider, ModelInfo, RuntimeProvider, SessionListItem } from "./protocol";
 
-export type AppView = "chat" | "settings";
+export type AppView = "chat" | "history" | "settings";
 
 export interface ChatLine {
   role: "user" | "agent" | "thinking" | "error" | "system";
@@ -30,6 +30,9 @@ export interface AppState {
   selectedModelName?: string;
   localModels: LocalModel[];
   localLoading: boolean;
+  openRouterModels: ModelInfo[];
+  openRouterLoading: boolean;
+  openRouterModelFilter: string;
   runtimeConnected: boolean;
   runtimeError?: string;
   authStatus: AuthStatus;
@@ -53,6 +56,9 @@ export function createInitialState(): AppState {
     localProvider: "ollama",
     localModels: [],
     localLoading: false,
+    openRouterModels: [],
+    openRouterLoading: false,
+    openRouterModelFilter: "",
     runtimeConnected: false,
     authStatus: "disconnected",
     hasKey: false,
