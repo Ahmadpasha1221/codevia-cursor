@@ -1,39 +1,138 @@
 import type { RuntimeToolCall } from "../runtimeTypes";
-import { isLocalToolName } from "./localToolDefinitions";
+import { isLocalToolName } from "./toolRegistry";
 
+export type InvalidToolReason = "unknown-tool" | "malformed";
+
+export interface InvalidToolMention {
+  readonly name?: string;
+  readonly raw: string;
+  readonly reason: InvalidToolReason;
+}
+
+export interface ParsedToolOutput {
+  /** Tool calls whose names exist in the registry and can be executed. */
+  readonly calls: RuntimeToolCall[];
+  /** Model-produced tool-like objects that do NOT match the registry. */
+  readonly invalid: InvalidToolMention[];
+}
+
+/**
+ * Full classification of model output: valid calls, invalid tool names, and
+ * malformed fragments are distinguished so the agent loop can recover from
+ * hallucinated tools (e.g. {"name":"execute"}) instead of leaking the raw JSON
+ * into the chat as an assistant message.
+ */
+export function parseToolOutputFromText(text: string): ParsedToolOutput {
+  const objects = collectJsonObjects(text);
+  return classifyObjects(objects);
+}
+
+/** Back-compat wrapper: valid calls only. */
 export function parseToolCallsFromText(text: string): RuntimeToolCall[] {
-  const calls: RuntimeToolCall[] = [];
-  const tagged = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = tagged.exec(text)) !== null) {
-    calls.push(...toToolCalls(parseJsonPayload(match[1] ?? "")));
-  }
-
-  if (calls.length === 0) {
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    if (fenced?.[1]) {
-      calls.push(...toToolCalls(parseJsonPayload(fenced[1])));
-    }
-  }
-
-  if (calls.length === 0) {
-    for (const candidate of extractJsonValues(text)) {
-      calls.push(...toToolCalls(candidate));
-    }
-  }
-
-  return dedupe(calls);
+  return parseToolOutputFromText(text).calls;
 }
 
 export function parseNativeToolCalls(raw: unknown): RuntimeToolCall[] {
+  return parseNativeToolOutput(raw).calls;
+}
+
+export function parseNativeToolOutput(raw: unknown): ParsedToolOutput {
   if (!Array.isArray(raw)) {
-    return [];
+    return { calls: [], invalid: [] };
   }
+  return classifyObjects(raw.map(normalizeNativeCall));
+}
+
+function classifyObjects(objects: readonly unknown[]): ParsedToolOutput {
   const calls: RuntimeToolCall[] = [];
-  for (const entry of raw) {
-    calls.push(...toToolCalls(normalizeNativeCall(entry)));
+  const invalid: InvalidToolMention[] = [];
+  for (const object of objects) {
+    const classified = classifyObject(object);
+    if (classified.kind === "call") {
+      calls.push(classified.call);
+    } else if (classified.kind === "invalid") {
+      invalid.push(classified.mention);
+    }
   }
-  return dedupe(calls);
+  return { calls: dedupe(calls), invalid };
+}
+
+type Classified =
+  | { kind: "call"; call: RuntimeToolCall }
+  | { kind: "invalid"; mention: InvalidToolMention }
+  | { kind: "ignore" };
+
+function classifyObject(value: unknown): Classified {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const classified = classifyObject(entry);
+      if (classified.kind !== "ignore") {
+        return classified;
+      }
+    }
+    return { kind: "ignore" };
+  }
+  if (!isRecord(value)) {
+    return { kind: "ignore" };
+  }
+
+  const name = typeof value.name === "string" ? value.name : undefined;
+  if (!name) {
+    // A JSON object without a tool name is usually ordinary JSON content.
+    return { kind: "ignore" };
+  }
+
+  if (isLocalToolName(name)) {
+    const input = value.arguments ?? value.input ?? value.parameters ?? {};
+    return {
+      kind: "call",
+      call: {
+        id: typeof value.id === "string" && value.id.length > 0 ? value.id : crypto.randomUUID(),
+        name,
+        input: isRecord(input) ? input : {},
+      },
+    };
+  }
+
+  return {
+    kind: "invalid",
+    mention: {
+      name,
+      raw: safeJson(value),
+      reason: "unknown-tool",
+    },
+  };
+}
+
+function collectJsonObjects(text: string): unknown[] {
+  const objects: unknown[] = [];
+
+  const tagged = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = tagged.exec(text)) !== null) {
+    const parsed = parseJsonPayload(match[1] ?? "");
+    if (parsed !== undefined) {
+      objects.push(parsed);
+    }
+  }
+
+  if (objects.length === 0) {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+      const parsed = parseJsonPayload(fenced[1]);
+      if (parsed !== undefined) {
+        objects.push(parsed);
+      }
+    }
+  }
+
+  if (objects.length === 0) {
+    for (const candidate of extractJsonValues(text)) {
+      objects.push(candidate);
+    }
+  }
+
+  return objects;
 }
 
 function extractJsonValues(text: string): unknown[] {
@@ -123,23 +222,6 @@ function parseJsonPayload(value: unknown): unknown {
   } catch {
     return undefined;
   }
-}
-
-function toToolCalls(value: unknown): RuntimeToolCall[] {
-  if (Array.isArray(value)) {
-    return value.flatMap((entry) => toToolCalls(entry));
-  }
-  if (!isRecord(value) || typeof value.name !== "string" || !isLocalToolName(value.name)) {
-    return [];
-  }
-  const input = value.arguments ?? value.input ?? value.parameters ?? {};
-  return [
-    {
-      id: typeof value.id === "string" && value.id.length > 0 ? value.id : crypto.randomUUID(),
-      name: value.name,
-      input: isRecord(input) ? input : {},
-    },
-  ];
 }
 
 function dedupe(calls: RuntimeToolCall[]): RuntimeToolCall[] {
