@@ -5,6 +5,19 @@ export type AppView = "chat" | "settings";
 export interface ChatLine {
   role: "user" | "agent" | "thinking" | "error" | "system";
   text: string;
+  permission?: {
+    requestId: string;
+    command?: string;
+    pending: boolean;
+    destructive?: boolean;
+  };
+  command?: {
+    command: string;
+    stdout?: string;
+    stderr?: string;
+    exitCode?: number | null;
+    running?: boolean;
+  };
 }
 
 export interface AppState {
@@ -26,6 +39,7 @@ export interface AppState {
   sessions: SessionListItem[];
   activeSessionId?: string;
   messages: ChatLine[];
+  lastPrompt?: string;
 }
 
 export function createInitialState(): AppState {

@@ -28,7 +28,7 @@ button, input, select, textarea { font: inherit; }
 .view { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 10px; gap: 8px; }
 .view[hidden] { display: none; }
 
-.setup-banner { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
+.setup-banner:not([hidden]) { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
 .setup-banner span { color: var(--muted); line-height: 1.4; }
 .setup-banner .btn { align-self: flex-start; margin-top: 3px; }
 
@@ -57,6 +57,7 @@ button, input, select, textarea { font: inherit; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
 .btn-danger { background: transparent; color: var(--error); border-color: var(--error); }
+.permission-actions { display: flex; gap: 6px; margin-top: 8px; }
 
 .settings-view { overflow: auto; }
 .settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }

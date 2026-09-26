@@ -14,6 +14,7 @@ export interface LocalModel {
 
 export type GuiToHost =
   | { type: "SEND_PROMPT"; prompt: string; sessionId: string }
+  | { type: "TRY_AGAIN"; sessionId: string }
   | { type: "CANCEL_RUN"; sessionId: string }
   | { type: "NEW_SESSION" }
   | { type: "SELECT_SESSION"; sessionId: string }
@@ -26,7 +27,9 @@ export type GuiToHost =
   | { type: "DISCOVER_LOCAL_MODELS"; provider?: LocalProvider }
   | { type: "CONNECT_LOCAL"; provider: LocalProvider; baseUrl?: string; apiKey?: string; modelId?: string }
   | { type: "SELECT_LOCAL_MODEL"; modelId: string }
-  | { type: "USE_MOCK_RUNTIME" };
+  | { type: "USE_MOCK_RUNTIME" }
+  | { type: "APPROVE_PERMISSION"; requestId: string }
+  | { type: "DENY_PERMISSION"; requestId: string };
 
 export interface SessionListItem {
   sessionId: string;
@@ -39,10 +42,11 @@ export type HostToGui =
   | { type: "AGENT_STATE"; state: string }
   | { type: "AGENT_MESSAGE"; message: string }
   | { type: "AGENT_THINKING"; message: string }
-  | { type: "AGENT_TOOL_CALL"; toolCall: { toolName?: string } }
-  | { type: "AGENT_TOOL_RESULT"; result: { toolName?: string } }
+  | { type: "AGENT_TOOL_CALL"; toolCall: { toolName?: string; command?: string; path?: string } }
+  | { type: "AGENT_TOOL_RESULT"; result: { toolName?: string; error?: string } }
+  | { type: "AGENT_COMMAND_OUTPUT"; command: string; cwd?: string; stdout: string; stderr: string; exitCode: number | null }
   | { type: "AGENT_ERROR"; error: string }
-  | { type: "PERMISSION_REQUEST"; requestId: string; message: string }
+  | { type: "PERMISSION_REQUEST"; requestId: string; message: string; command?: string; category?: string; destructive?: boolean }
   | { type: "SESSION_UPDATED"; sessions: SessionListItem[]; activeSessionId?: string }
   | { type: "AUTH_STATUS"; status: AuthStatus; hasKey: boolean; error?: string; message?: string }
   | { type: "RUNTIME_STATUS"; provider: RuntimeProvider; connected: boolean; modelId?: string; modelName?: string; localProvider?: LocalProvider; error?: string }
