@@ -81,6 +81,35 @@ input:focus, select:focus, textarea:focus {
 .message-thinking { color: var(--muted); font-style: italic; }
 .message-error { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
 
+/* Execution boxes (Tool / Command lifecycle). One element per execution,
+   updated in place: requested → running → completed/failed. */
+.exec-box { padding: 0; background: transparent; }
+.exec-card {
+  border: 1px solid var(--border); background: var(--card-bg);
+  padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+  animation: exec-in 140ms ease-out;
+}
+.exec-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.exec-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exec-status { flex-shrink: 0; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 1px 6px; border: 1px solid var(--border); }
+.exec-status.is-running { color: var(--accent-soft); border-color: var(--accent); animation: exec-pulse 1.2s ease-in-out infinite; }
+.exec-status.is-completed { color: var(--vscode-testing-iconPassed, #73c991); border-color: color-mix(in srgb, #73c991 40%, var(--border)); }
+.exec-status.is-failed { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
+.exec-detail { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.exec-output {
+  margin: 0; padding: 6px 8px; max-height: 180px; overflow: auto;
+  background: var(--input-bg); color: var(--input-fg);
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 12px;
+  white-space: pre-wrap; word-break: break-word;
+}
+@keyframes exec-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes exec-pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) {
+  .exec-card { animation: none; }
+  .exec-status.is-running { animation: none; }
+  .message-agent.streaming-line::after { content: none; }
+}
+
 .composer { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); padding: 7px; background: var(--input-bg); }
 .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .composer textarea { width: 100%; min-height: 62px; max-height: 180px; resize: vertical; padding: 5px; border: 1px solid transparent; outline: none; background: transparent; color: var(--input-fg); }
@@ -101,6 +130,9 @@ input:focus, select:focus, textarea:focus {
 .message-agent.streaming-line { border-left-color: var(--accent-soft); }
 .message-agent.streaming-line::after { content: "▋"; color: var(--accent-soft); animation: blink 1s steps(2, start) infinite; }
 @keyframes blink { to { visibility: hidden; } }
+
+/* Thinking/status lines collapse visually into a compact status stream. */
+.message-thinking .message-body { font-size: 12px; }
 
 .settings-view { overflow: auto; }
 .settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }

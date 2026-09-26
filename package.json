@@ -56,7 +56,7 @@
         {
           "id": "codeviaCursor",
           "title": "Spider",
-          "icon": "$(robot)"
+          "icon": "assets/spider-icon.png"
         }
       ]
     },
@@ -65,7 +65,8 @@
         {
           "type": "webview",
           "id": "codeviaCursor.agent",
-          "name": "Agent"
+          "name": "Agent",
+          "icon": "assets/icon.png"
         }
       ]
     },

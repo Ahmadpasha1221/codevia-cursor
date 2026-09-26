@@ -210,6 +210,8 @@ export type RuntimeEvent =
       type: "command_output";
       sessionId: string;
       command: string;
+      /** Tool call this output belongs to, so the UI updates the same box. */
+      toolCallId: string;
       cwd?: string;
       stdout: string;
       stderr: string;

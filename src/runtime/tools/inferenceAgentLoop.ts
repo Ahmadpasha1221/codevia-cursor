@@ -386,6 +386,7 @@ async function emitCommandOutput(
     type: "command_output",
     sessionId,
     command: typeof result.command === "string" ? result.command : commandFromInput(call.input),
+    toolCallId: call.id,
     ...(typeof result.cwd === "string" ? { cwd: result.cwd } : {}),
     stdout: typeof result.stdout === "string" ? result.stdout : "",
     stderr: typeof result.stderr === "string" ? result.stderr : "",
