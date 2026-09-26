@@ -4,31 +4,49 @@
   --border: var(--vscode-panel-border, #3c3c3c);
   --input-bg: var(--vscode-input-background, #3c3c3c);
   --input-fg: var(--vscode-input-foreground, #cccccc);
-  --button-bg: var(--vscode-button-background, #7c3aed);
-  --button-fg: var(--vscode-button-foreground, #ffffff);
-  --button-hover: var(--vscode-button-hoverBackground, #8b5cf6);
+  /* Unique violet accent — intentionally different from the VS Code default button color */
+  --accent: #8b5cf6;
+  --accent-strong: #7c3aed;
+  --accent-soft: #a78bfa;
+  --accent-contrast: #ffffff;
+  --button-bg: var(--accent);
+  --button-fg: var(--accent-contrast);
+  --button-hover: var(--accent-soft);
   --muted: var(--vscode-descriptionForeground, #9d9d9d);
   --error: var(--vscode-errorForeground, #f44747);
   --user-bg: var(--vscode-editor-inactiveSelectionBackground, #2a2d2e);
-  --agent-border: #7c3aed;
+  --agent-border: var(--accent);
   --card-bg: color-mix(in srgb, var(--bg) 92%, var(--fg));
 }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, system-ui, sans-serif); font-size: var(--vscode-font-size, 13px); }
 button, input, select, textarea { font: inherit; }
+
+/* Sharp edges everywhere: inputs, buttons, selects, cards, messages */
+button, input, select, textarea, .provider-card, .setup-banner, .message, .composer { border-radius: 0; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Inputs show the violet outer border when focused */
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 #app { display: flex; flex-direction: column; height: 100%; min-width: 0; }
 
 .app-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); min-height: 42px; }
 .brand { font-weight: 600; letter-spacing: .02em; }
 .runtime-pill { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon-btn { border: 0; background: transparent; color: var(--muted); padding: 4px 7px; cursor: pointer; }
-.icon-btn:hover { color: var(--fg); background: var(--user-bg); }
+.icon-btn:hover { color: var(--accent-soft); background: var(--user-bg); }
+.icon-btn:active { color: var(--accent); }
 
 .view { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 10px; gap: 8px; }
 .view[hidden] { display: none; }
 
-.setup-banner:not([hidden]) { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
+.setup-banner:not([hidden]) { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); padding: 12px; background: var(--card-bg); }
 .setup-banner span { color: var(--muted); line-height: 1.4; }
 .setup-banner .btn { align-self: flex-start; margin-top: 3px; }
 
@@ -40,24 +58,33 @@ button, input, select, textarea { font: inherit; }
 .empty-chat { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 6px; text-align: center; color: var(--muted); }
 .empty-chat strong { color: var(--fg); font-size: 15px; }
 .empty-chat span { max-width: 280px; line-height: 1.45; }
-.message { margin: 0 0 10px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; white-space: pre-wrap; word-break: break-word; }
+.message { margin: 0 0 10px; padding: 9px 10px; border: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; }
 .message-user { background: var(--user-bg); }
 .message-agent { border-left: 3px solid var(--agent-border); }
 .message-meta { display: block; margin-bottom: 4px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
 .message-thinking { color: var(--muted); font-style: italic; }
 .message-error { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
 
-.composer { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 7px; background: var(--input-bg); }
-.composer textarea { width: 100%; min-height: 62px; max-height: 180px; resize: vertical; padding: 5px; border: 0; outline: none; background: transparent; color: var(--input-fg); }
-.composer textarea:focus { outline: none; }
+.composer { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--border); padding: 7px; background: var(--input-bg); }
+.composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.composer textarea { width: 100%; min-height: 62px; max-height: 180px; resize: vertical; padding: 5px; border: 1px solid transparent; outline: none; background: transparent; color: var(--input-fg); }
+.composer textarea:focus { border-color: transparent; box-shadow: none; }
 .composer-actions { display: flex; gap: 6px; justify-content: flex-end; }
 
-.btn { background: var(--button-bg); color: var(--button-fg); border: 1px solid var(--button-bg); border-radius: 5px; padding: 6px 10px; cursor: pointer; }
-.btn:hover:not(:disabled) { background: var(--button-hover); }
+.btn { background: var(--accent); color: var(--accent-contrast); border: 1px solid var(--accent); border-radius: 0; padding: 6px 10px; cursor: pointer; }
+.btn:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent-soft); }
+.btn:active:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
+.btn-ghost { background: transparent; color: var(--accent-soft); border-color: var(--accent); }
+.btn-ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-contrast); border-color: var(--accent); }
 .btn-danger { background: transparent; color: var(--error); border-color: var(--error); }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--error) 15%, transparent); }
 .permission-actions { display: flex; gap: 6px; margin-top: 8px; }
+.file-change-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.permission-resolved { display: inline-block; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.message-agent.streaming-line { border-left-color: var(--accent-soft); }
+.message-agent.streaming-line::after { content: "▋"; color: var(--accent-soft); animation: blink 1s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
 
 .settings-view { overflow: auto; }
 .settings-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
@@ -67,14 +94,14 @@ h2 { font-size: 13px; margin-bottom: 4px; }
 .hint, .feedback { margin: 0; color: var(--muted); line-height: 1.4; }
 .feedback.is-error { color: var(--error); }
 .settings-section { display: flex; flex-direction: column; gap: 10px; }
-.provider-card { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--card-bg); }
+.provider-card { display: flex; flex-direction: column; gap: 9px; border: 1px solid var(--border); padding: 12px; background: var(--card-bg); }
 .connection-state, .local-status { color: var(--muted); font-size: 12px; }
 .connection-state.is-connected { color: var(--vscode-testing-iconPassed, #73c991); }
 .connection-state.is-error { color: var(--error); }
 
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 11px; color: var(--muted); }
-.field input, .field select, .select-control, .session-bar select { width: 100%; padding: 7px 8px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--border); border-radius: 4px; }
+.field input, .field select, .select-control, .session-bar select { width: 100%; padding: 7px 8px; background: var(--input-bg); color: var(--input-fg); border: 1px solid var(--border); border-radius: 0; }
 .form-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
 @media (max-width: 360px) {
