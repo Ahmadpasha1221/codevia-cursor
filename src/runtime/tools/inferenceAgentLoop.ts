@@ -4,9 +4,12 @@ import type {
   RuntimeToolCall,
   RuntimeToolCallResponse,
 } from "../runtimeTypes";
-import { RuntimeError } from "../runtimeTypes";
+import { RuntimeError, RuntimeUsage } from "../runtimeTypes";
 import { buildAgentSystemPrompt, stripToolCallMarkup } from "./localToolDefinitions";
-import { parseFallbackToolCalls, TEXT_TOOL_FALLBACK_INSTRUCTION } from "./textToolFallback";
+import { parseFallbackToolOutput } from "./textToolFallback";
+import { parseNativeToolOutput, type InvalidToolMention, type ParsedToolOutput } from "./parseToolCalls";
+import { availableToolNames, DEFAULT_AGENT_MODE, type AgentMode } from "./toolAvailability";
+import { buildFallbackToolContract } from "./toolRegistry";
 
 export interface ChatTurn {
   role: "system" | "user" | "assistant" | "tool";
@@ -21,16 +24,40 @@ export interface ChatTurn {
 export interface ChatCompletion {
   readonly content: string;
   readonly nativeToolCalls?: RuntimeToolCall[];
+  readonly usage?: RuntimeUsage;
 }
 
 export type CompleteChat = (messages: readonly ChatTurn[], signal?: AbortSignal) => Promise<ChatCompletion>;
 
+/**
+ * Hard ceiling on model turns that execute tools, and a smaller budget for
+ * invalid tool selections so a weak local model cannot hallucinate tools
+ * ({"name":"execute"}) forever.
+ */
 export const MAX_TOOL_ITERATIONS = 20;
+export const MAX_INVALID_TOOL_RETRIES = 2;
 
 export interface AgentLoopOptions {
   readonly nativeTools: boolean;
+  /**
+   * Current mode selecting the available-tool set (architecture item 8).
+   * Defaults to "agent" (all registered tools); future modes restrict tools
+   * without any changes to the loop itself.
+   */
+  readonly mode?: AgentMode;
 }
 
+/**
+ * Production agent loop, provider-independent:
+ *
+ *   AGENT START → UNDERSTAND → DECIDE (direct vs tool) → SELECT TOOL →
+ *   VALIDATE NAME → VALIDATE ARGS → PERMISSION → EXECUTE → STRUCTURED RESULT →
+ *   MODEL OBSERVES → CONTINUE / VERIFY / FINISH → AGENT COMPLETE
+ *
+ * Only tools from the central registry are executable. Invalid tool selections
+ * become structured feedback to the model (never chat output). The Thinking UI
+ * receives safe progress messages only — never hidden chain-of-thought.
+ */
 export async function runInferenceAgentLoop(
   request: RuntimeSendRequest,
   history: ChatTurn[],
@@ -38,24 +65,82 @@ export async function runInferenceAgentLoop(
   emit: RuntimeEventSink,
   options: AgentLoopOptions = { nativeTools: true },
 ): Promise<void> {
+  const onUsage = (usage: RuntimeUsage): void => {
+    if (usage.totalTokens > 0) {
+      void request.usageSink?.(usage);
+    }
+  };
+
+  const mode = options.mode ?? DEFAULT_AGENT_MODE;
+  // The current available-tool set: what the model sees, what feedback lists,
+  // and what the loop is willing to route. Single source: the registry via
+  // toolAvailability.
+  const allowedTools = availableToolNames(mode);
+
   prepareHistory(history, request.retry === true);
-  ensureSystemPrompt(history, request.modelId, options.nativeTools);
+  ensureSystemPrompt(history, request.modelId, options.nativeTools, allowedTools);
   history.push({ role: "user", content: request.prompt });
   await emit({ type: "status", sessionId: request.sessionId, status: "RUNNING", timestamp: Date.now() });
 
   if (!request.onToolCall) {
     const completion = await completeChat(history, request.signal);
+    if (completion.usage) {
+      onUsage(completion.usage);
+    }
     const message = visibleText(completion.content) || "(The local model returned an empty response.)";
     history.push({ role: "assistant", content: message });
     await emit({ type: "assistant_message", sessionId: request.sessionId, message, timestamp: Date.now() });
     return;
   }
 
+  let invalidToolRetries = 0;
+  let lastThinking: string | undefined;
+
+  /** Emits safe progress only; consecutive duplicates are suppressed. */
+  const emitThinking = async (message: string): Promise<void> => {
+    if (message.length === 0 || message === lastThinking) {
+      return;
+    }
+    lastThinking = message;
+    await emit({ type: "thinking", sessionId: request.sessionId, message, timestamp: Date.now() });
+  };
+
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration += 1) {
     throwIfAborted(request.signal);
     const completion = await completeChat(history, request.signal);
-    const calls = selectToolCalls(completion, options.nativeTools);
+    if (completion.usage) {
+      onUsage(completion.usage);
+    }
+
+    const output = selectToolOutput(completion, options.nativeTools);
+    // Classification gate: only safe text passes to the Thinking UI. Tool
+    // protocol (any name, valid or not, complete or partial) never reaches it.
     const visible = visibleText(completion.content);
+
+    // Registry-known tools outside the current available-tool set are
+    // recovered exactly like hallucinated tools: structured feedback, retry.
+    const { available, unavailable } = partitionByAvailability(output.calls, allowedTools);
+    const invalid: InvalidToolMention[] = [
+      ...output.invalid,
+      ...unavailable.map((call) => ({ name: call.name, raw: call.name, reason: "unknown-tool" as const })),
+    ];
+    const calls = available;
+
+    // Invalid tool selection: recover with structured feedback, bounded retries.
+    if (calls.length === 0 && invalid.length > 0) {
+      invalidToolRetries += 1;
+      if (invalidToolRetries > MAX_INVALID_TOOL_RETRIES) {
+        const message = "I couldn't complete this request because the required tool is not available. Please rephrase the task.";
+        history.push({ role: "assistant", content: message });
+        await emit({ type: "assistant_message", sessionId: request.sessionId, message, timestamp: Date.now() });
+        return;
+      }
+      const names = invalid.map((mention) => mention.name ?? "unknown");
+      await emitThinking(`Unknown tool "${names.join(", ")}". Choosing from the available tools…`);
+      history.push({ role: "assistant", content: visible });
+      history.push({ role: "user", content: invalidToolFeedback(invalid, allowedTools) });
+      continue;
+    }
 
     if (calls.length === 0) {
       const message = visible || "(The local model returned an empty response.)";
@@ -65,7 +150,7 @@ export async function runInferenceAgentLoop(
     }
 
     if (visible.length > 0) {
-      await emit({ type: "thinking", sessionId: request.sessionId, message: visible, timestamp: Date.now() });
+      await emitThinking(visible);
     }
 
     history.push({
@@ -85,7 +170,10 @@ export async function runInferenceAgentLoop(
       throwIfAborted(request.signal);
       await emit({ type: "tool_call", sessionId: request.sessionId, toolCall: call, timestamp: Date.now() });
       await emit({ type: "tool_running", sessionId: request.sessionId, toolCall: call, timestamp: Date.now() });
+      await emitThinking(describeToolStart(call));
+
       const response = await request.onToolCall(call, request.signal);
+
       await emitCommandOutput(request.sessionId, call, response, emit);
       await emit({
         type: "tool_result",
@@ -103,11 +191,26 @@ export async function runInferenceAgentLoop(
         content: JSON.stringify(response.result ?? { success: false, tool: call.name, error: response.error ?? "Tool failed." }),
       });
 
+      // Terminal: after a successful finish there are no more model calls,
+      // tools, or Thinking events. COMPLETED is final for this run.
       if (response.finished) {
+        if (response.error) {
+          const message = "The task could not be completed successfully.";
+          history.push({ role: "assistant", content: message });
+          await emit({ type: "assistant_message", sessionId: request.sessionId, message, timestamp: Date.now() });
+          return;
+        }
+        await emitThinking("Finishing…");
         const summary = summaryFrom(response.result) || "Done.";
         history.push({ role: "assistant", content: summary });
         await emit({ type: "assistant_message", sessionId: request.sessionId, message: summary, timestamp: Date.now() });
         return;
+      }
+
+      if (response.error) {
+        await emitThinking(describeToolProblem(call));
+      } else {
+        await emitThinking("Checking the result…");
       }
     }
   }
@@ -117,17 +220,81 @@ export async function runInferenceAgentLoop(
   await emit({ type: "assistant_message", sessionId: request.sessionId, message, timestamp: Date.now() });
 }
 
-function selectToolCalls(completion: ChatCompletion, nativeTools: boolean): RuntimeToolCall[] {
+function selectToolOutput(completion: ChatCompletion, nativeTools: boolean): ParsedToolOutput {
   if (nativeTools) {
-    return completion.nativeToolCalls ?? [];
+    return parseNativeToolOutput(completion.nativeToolCalls ?? []);
   }
-  return parseFallbackToolCalls(completion.content);
+  return parseFallbackToolOutput(completion.content);
 }
 
-function ensureSystemPrompt(history: ChatTurn[], modelId: string | undefined, nativeTools: boolean): void {
-  const prompt = nativeTools
-    ? buildAgentSystemPrompt(modelId)
-    : `${buildAgentSystemPrompt(modelId)}\n\n${TEXT_TOOL_FALLBACK_INSTRUCTION}`;
+/** Splits parsed calls into tools inside the available set and outside it. */
+function partitionByAvailability(
+  calls: readonly RuntimeToolCall[],
+  allowedTools: readonly string[],
+): { available: RuntimeToolCall[]; unavailable: RuntimeToolCall[] } {
+  const allowed = new Set(allowedTools);
+  const available: RuntimeToolCall[] = [];
+  const unavailable: RuntimeToolCall[] = [];
+  for (const call of calls) {
+    if (allowed.has(call.name)) {
+      available.push(call);
+    } else {
+      unavailable.push(call);
+    }
+  }
+  return { available, unavailable };
+}
+
+function invalidToolFeedback(invalid: readonly InvalidToolMention[], allowedTools: readonly string[]): string {
+  const requested = invalid.map((mention) => mention.name ?? "unknown").join(", ");
+  return [
+    "TOOL_ERROR: INVALID_TOOL",
+    `requested = "${requested}"`,
+    `Unknown tool: ${requested}.`,
+    `Available tools:\n${allowedTools.join("\n")}`,
+    "Retry by outputting exactly one JSON object with a valid tool name and its arguments, or reply in plain text if no tool is needed.",
+  ].join("\n");
+}
+
+/** Safe, user-facing progress lines. Never exposes hidden reasoning. */
+export function describeToolStart(call: RuntimeToolCall): string {
+  const input = isRecord(call.input) ? call.input : {};
+  const path = typeof input.path === "string" ? input.path : undefined;
+  switch (call.name) {
+    case "list_files":
+      return "Inspecting the workspace…";
+    case "read_file":
+      return path ? `Reading ${path}…` : "Reading file…";
+    case "search_files":
+      return typeof input.query === "string" ? `Searching for "${input.query}"…` : "Searching the workspace…";
+    case "write_file":
+      return path ? `Creating ${path}…` : "Creating file…";
+    case "edit_file":
+      return path ? `Updating ${path}…` : "Updating file…";
+    case "create_directory":
+      return path ? `Creating folder ${path}…` : "Creating folder…";
+    case "move_file":
+      return typeof input.from === "string" ? `Moving ${input.from}…` : "Moving file…";
+    case "delete_file":
+      return path ? `Deleting ${path}…` : "Deleting file…";
+    case "run_command":
+      return typeof input.command === "string" ? `Running: ${input.command}` : "Running command…";
+    case "finish":
+      return "Finishing…";
+    default:
+      return `Using ${call.name}…`;
+  }
+}
+
+function describeToolProblem(call: RuntimeToolCall): string {
+  const input = isRecord(call.input) ? call.input : {};
+  const path = typeof input.path === "string" ? input.path : "";
+  return `The ${call.name} step did not succeed${path ? ` (${path})` : ""}. Deciding what to do next…`;
+}
+
+function ensureSystemPrompt(history: ChatTurn[], modelId: string | undefined, nativeTools: boolean, allowedTools: readonly string[]): void {
+  const base = buildAgentSystemPrompt(modelId);
+  const prompt = nativeTools ? base : `${base}\n\n${buildFallbackToolContract(allowedTools)}`;
   const existing = history.find((turn) => turn.role === "system");
   if (!existing) {
     history.unshift({ role: "system", content: prompt });
@@ -151,7 +318,7 @@ function prepareHistory(history: ChatTurn[], retry: boolean): void {
   if (
     last?.role === "assistant"
     && visibleText(last.content).length === 0
-    && ((last.tool_calls && last.tool_calls.length > 0) || parseFallbackToolCalls(last.content).length > 0)
+    && ((last.tool_calls && last.tool_calls.length > 0) || parseFallbackToolOutput(last.content).calls.length > 0)
   ) {
     history.pop();
   }
