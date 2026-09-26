@@ -86,8 +86,8 @@
   "scripts": {
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src test --max-warnings 0",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.gui.json --noEmit",
+    "lint": "eslint src test gui --max-warnings 0",
     "format": "prettier --write .",
     "test": "vitest run",
     "test:integration": "vscode-test",
