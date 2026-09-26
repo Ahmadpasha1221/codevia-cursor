@@ -37,6 +37,9 @@ export class AgentManager {
     this.activeSessionId = undefined;
 
     for (const session of loaded) {
+      if (session.provider !== "cursor") {
+        continue;
+      }
       if (this.isNonTerminal(session.status)) {
         session.status = "DISCONNECTED";
         session.updatedAt = new Date(now);
