@@ -18,6 +18,31 @@ describe("PermissionPolicy", () => {
     expect(policy.classify("shell", undefined, undefined)).toBe("EXECUTE");
   });
 
+  it("classifies list_files, read_file, and search_files as READ", () => {
+    const policy = createPolicy();
+    expect(policy.classify("list_files", undefined, undefined)).toBe("READ");
+    expect(policy.classify("read_file", undefined, undefined)).toBe("READ");
+    expect(policy.classify("search_files", undefined, undefined)).toBe("READ");
+  });
+
+  it("classifies write_file, edit_file, create_directory, and move_file as MODIFY", () => {
+    const policy = createPolicy({ destructiveConfirmations: new Set() });
+    expect(policy.classify("write_file", undefined, undefined)).toBe("MODIFY");
+    expect(policy.classify("edit_file", undefined, undefined)).toBe("MODIFY");
+    expect(policy.classify("create_directory", undefined, undefined)).toBe("MODIFY");
+    expect(policy.classify("move_file", undefined, undefined)).toBe("MODIFY");
+  });
+
+  it("classifies run_command as EXECUTE", () => {
+    const policy = createPolicy();
+    expect(policy.classify("run_command", "pytest", undefined)).toBe("EXECUTE");
+  });
+
+  it("classifies delete_file as DESTRUCTIVE", () => {
+    const policy = createPolicy();
+    expect(policy.classify("delete_file", undefined, undefined)).toBe("DESTRUCTIVE");
+  });
+
   it("classifies webFetch as EXTERNAL (lowercase)", () => {
     const policy = createPolicy();
     expect(policy.classify("webFetch", undefined, undefined)).toBe("EXTERNAL");
