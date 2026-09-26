@@ -24,6 +24,18 @@ export default [
     },
   },
   {
+    files: ["gui/**/*.ts"],
+    languageOptions: {
+      globals: {
+        window: "readonly",
+        document: "readonly",
+        HTMLElement: "readonly",
+        HTMLButtonElement: "readonly",
+        MessageEvent: "readonly",
+      },
+    },
+  },
+  {
     ignores: ["dist/**", "out/**", "node_modules/**"],
   },
 ];
