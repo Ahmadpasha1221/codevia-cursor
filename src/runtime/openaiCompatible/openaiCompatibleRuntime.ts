@@ -18,6 +18,7 @@ import { parseNativeToolCalls } from "../tools/parseToolCalls";
 import { nativeChatTools } from "../tools/toolRegistry";
 import { availableToolNames, type AgentMode } from "../tools/toolAvailability";
 import { modelSupportsNativeTools } from "../tools/textToolFallback";
+import { toOpenAiMessages } from "./openAiMessages";
 type FetchLike = typeof fetch;
 
 function normalizeOpenAiUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): RuntimeUsage | undefined {
@@ -30,23 +31,38 @@ function normalizeOpenAiUsage(usage: { prompt_tokens?: number; completion_tokens
   return { promptTokens, completionTokens, totalTokens };
 }
 
+export interface OpenAICompatibleRuntimeOptions {
+  /** Runtime provider identity reported to the RuntimeManager. */
+  readonly provider?: RuntimeProvider;
+  /** Endpoint used when no explicit base URL is configured. */
+  readonly defaultBaseUrl?: string;
+  /** Whether configure() may change the base URL (false for fixed-endpoint providers). */
+  readonly baseUrlEditable?: boolean;
+}
+
 export class OpenAICompatibleRuntime implements AgentRuntime {
-  readonly provider: RuntimeProvider = "openai-compatible";
+  readonly provider: RuntimeProvider;
   readonly family: RuntimeProviderFamily = "inference";
 
-  private baseUrl = "http://127.0.0.1:1234/v1";
+  private baseUrl: string;
+  private readonly baseUrlEditable: boolean;
   private modelId?: string;
   private apiKey?: string;
   private readonly histories = new Map<string, ChatTurn[]>();
   private readonly fetcher: FetchLike;
 
-  constructor(fetcher: FetchLike = fetch) {
+  constructor(fetcher: FetchLike = fetch, options: OpenAICompatibleRuntimeOptions = {}) {
     this.fetcher = fetcher;
+    this.provider = options.provider ?? "openai-compatible";
+    this.baseUrl = options.defaultBaseUrl ?? "http://127.0.0.1:1234/v1";
+    this.baseUrlEditable = options.baseUrlEditable ?? true;
   }
 
   async configure(config: OpenAICompatibleRuntimeConfig): Promise<void> {
     const modelChanged = this.modelId !== undefined && this.modelId !== config.modelId;
-    this.baseUrl = config.baseUrl.replace(/\/$/, "");
+    if (this.baseUrlEditable && "baseUrl" in config && config.baseUrl) {
+      this.baseUrl = config.baseUrl.replace(/\/$/, "");
+    }
     this.modelId = config.modelId;
     this.apiKey = config.apiKey;
     if (modelChanged) {
@@ -153,14 +169,14 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: modelId,
-        messages,
+        messages: toOpenAiMessages(messages),
         stream: false,
         ...(nativeTools ? { tools: nativeChatTools(availableToolNames(mode)) } : {}),
       }),
     });
 
     if (!response.ok) {
-      throw new RuntimeError("unknown", `Local chat failed with HTTP ${response.status}.`);
+      throw this.chatError(response.status, await safeBodyText(response));
     }
 
     const payload = (await response.json()) as {
@@ -176,7 +192,7 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
     };
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  protected async request(path: string, init: RequestInit): Promise<Response> {
     const headers = new Headers(init.headers);
     if (this.apiKey) {
       headers.set("Authorization", `Bearer ${this.apiKey}`);
@@ -185,9 +201,42 @@ export class OpenAICompatibleRuntime implements AgentRuntime {
       return await this.fetcher(`${this.baseUrl}${path}`, { ...init, headers });
     } catch (error) {
       if (init.signal?.aborted) {
-        throw new RuntimeError("cancelled", "The local request was cancelled.", { cause: error });
+        throw new RuntimeError("cancelled", "The request was cancelled.", { cause: error });
       }
       throw new RuntimeError("network_error", `Could not reach ${this.baseUrl}.`, { retryable: true, cause: error });
     }
   }
+
+  /** Current per-session history (shared with composable runtimes). */
+  historyFor(sessionId: string): ChatTurn[] {
+    const history = this.histories.get(sessionId);
+    if (!history) {
+      this.histories.set(sessionId, []);
+      return this.histories.get(sessionId) as ChatTurn[];
+    }
+    return history;
+  }
+
+  /** Current API key (never log the returned value). */
+  getApiKey(): string | undefined {
+    return this.apiKey;
+  }
+
+  /** Maps a failed chat completion to a typed runtime error; subclasses may refine. */
+  protected chatError(status: number, body: string): RuntimeError {
+    const detail = body.length > 0 ? `: ${truncate(body, 200)}` : ".";
+    return new RuntimeError("unknown", `Chat failed with HTTP ${status}${detail}`);
+  }
+}
+
+async function safeBodyText(response: Response): Promise<string> {
+  try {
+    return (await response.text()).trim();
+  } catch {
+    return "";
+  }
+}
+
+function truncate(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
 }

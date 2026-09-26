@@ -87,7 +87,9 @@ function classifyObject(value: unknown): Classified {
     return {
       kind: "call",
       call: {
-        id: typeof value.id === "string" && value.id.length > 0 ? value.id : crypto.randomUUID(),
+        // Preserve the provider's tool-call id: the tool result must reference
+        // exactly this id, so never regenerate one when the model supplied it.
+        id: isNonEmptyString(value.id) ? value.id : `call_${crypto.randomUUID()}`,
         name,
         input: isRecord(input) ? input : {},
       },
@@ -206,7 +208,13 @@ function normalizeNativeCall(entry: unknown): unknown {
   if (!name) {
     return entry;
   }
-  return { name, arguments: parseJsonPayload(typeof args === "string" ? args : args) };
+  return {
+    // OpenAI-compatible providers put the call id on the entry itself; keep it
+    // so tool results can reference the exact same id later.
+    ...(isNonEmptyString(entry.id) ? { id: entry.id } : {}),
+    name,
+    arguments: parseJsonPayload(typeof args === "string" ? args : args),
+  };
 }
 
 function parseJsonPayload(value: unknown): unknown {
@@ -240,6 +248,10 @@ function dedupe(calls: RuntimeToolCall[]): RuntimeToolCall[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function safeJson(value: unknown): string {

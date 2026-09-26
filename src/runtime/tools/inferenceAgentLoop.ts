@@ -11,14 +11,23 @@ import { parseNativeToolOutput, type InvalidToolMention, type ParsedToolOutput }
 import { availableToolNames, DEFAULT_AGENT_MODE, type AgentMode } from "./toolAvailability";
 import { buildFallbackToolContract } from "./toolRegistry";
 
+export interface ChatToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
+/**
+ * OpenAI-compatible conversation turn. Tool turns carry `tool_call_id`, which
+ * MUST equal the id of the corresponding entry in the assistant turn's
+ * `tool_calls`; providers reject the request otherwise.
+ */
 export interface ChatTurn {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
-  tool_calls?: Array<{
-    id: string;
-    type: "function";
-    function: { name: string; arguments: Record<string, unknown> };
-  }>;
+  tool_calls?: ChatToolCall[];
+  /** Set on "tool" turns: the id of the assistant tool call this result answers. */
+  tool_call_id?: string;
 }
 
 export interface ChatCompletion {
@@ -161,7 +170,7 @@ export async function runInferenceAgentLoop(
         type: "function" as const,
         function: {
           name: call.name,
-          arguments: isRecord(call.input) ? call.input : {},
+          arguments: safeJsonArguments(call.input),
         },
       })),
     });
@@ -186,8 +195,20 @@ export async function runInferenceAgentLoop(
         },
         timestamp: Date.now(),
       });
+      // The tool result must reference the exact assistant tool-call id.
+      // A missing/empty id would make the whole conversation invalid for
+      // OpenAI-compatible providers, so fail explicitly instead of sending a
+      // malformed request that would also poison later turns.
+      const toolCallId = isNonEmptyString(call.id) ? call.id : undefined;
+      if (!toolCallId) {
+        throw new RuntimeError(
+          "unknown",
+          `Tool call "${call.name}" is missing a tool call id; refusing to build an invalid conversation.`,
+        );
+      }
       history.push({
         role: "tool",
+        tool_call_id: toolCallId,
         content: JSON.stringify(response.result ?? { success: false, tool: call.name, error: response.error ?? "Tool failed." }),
       });
 
@@ -326,6 +347,19 @@ function prepareHistory(history: ChatTurn[], retry: boolean): void {
 
 function visibleText(content: string): string {
   return stripToolCallMarkup(content);
+}
+
+/** OpenAI-compatible tool-call arguments are a JSON string. */
+function safeJsonArguments(input: unknown): string {
+  try {
+    return JSON.stringify(isRecord(input) ? input : {});
+  } catch {
+    return "{}";
+  }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function summaryFrom(result: unknown): string {
