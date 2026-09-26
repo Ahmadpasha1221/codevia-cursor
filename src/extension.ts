@@ -11,6 +11,11 @@ import { MessageRouter } from "./webview/messageRouter";
 import { AgentViewProvider } from "./webview/agentViewProvider";
 import { PermissionManager } from "./permissions/permissionManager";
 import { createDefaultPermissionPolicy } from "./permissions/permissionPolicy";
+import { RuntimeManager } from "./runtime/runtimeManager";
+import { MockRuntime } from "./runtime/mock/mockRuntime";
+import { OllamaRuntime } from "./runtime/ollama/ollamaRuntime";
+import { OpenAICompatibleRuntime } from "./runtime/openaiCompatible/openaiCompatibleRuntime";
+import { WorkspaceToolExecutor } from "./runtime/tools/workspaceToolExecutor";
 
 const logger = new Logger(EXTENSION_NAME, "INFO");
 
@@ -40,17 +45,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const sessionStore = new SessionStore(context.workspaceState);
   const agentManager = new AgentManager(cursorClient, sessionStore, permissionManager);
+  const runtimeManager = new RuntimeManager({
+    sessionStore,
+    permissionManager,
+    runtimes: [new OllamaRuntime(), new OpenAICompatibleRuntime(), new MockRuntime()],
+    logger,
+    toolExecutor: new WorkspaceToolExecutor(),
+    defaultWorkspacePath: getWorkspacePath(),
+  });
   const messageRouter = new MessageRouter(
     agentManager,
     getWorkspacePath(),
     connection,
     cursorClient,
+    runtimeManager,
   );
   const agentViewProvider = new AgentViewProvider(
     context.extensionUri,
     agentManager,
     messageRouter,
     connection,
+    runtimeManager,
   );
 
   context.subscriptions.push(
@@ -59,9 +74,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
   );
 
-  context.subscriptions.push(permissionManager, agentManager, agentViewProvider);
+  context.subscriptions.push(permissionManager, agentManager, runtimeManager, agentViewProvider);
 
   await agentManager.restoreSessions();
+  await runtimeManager.restoreSessions();
 
   const openAgentCommand = vscode.commands.registerCommand(COMMANDS.openAgent, async () => {
     logger.info("Open agent command invoked", { operation: "openAgent" });
