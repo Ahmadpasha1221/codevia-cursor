@@ -65,7 +65,7 @@ export function createMessageList(root: HTMLElement, initialHandlers?: MessageLi
     if (!hasLines && !empty) {
       const placeholder = document.createElement("div");
       placeholder.className = "empty-chat";
-      placeholder.innerHTML = `<strong>How can I help?</strong><span>Ask Codevia to explain, debug, refactor, or work on your code.</span>`;
+      placeholder.innerHTML = `<strong>How can I help?</strong><span>Ask Spider to explain, debug, refactor, or work on your code.</span>`;
       root.appendChild(placeholder);
     } else if (hasLines && empty) {
       empty.remove();
@@ -112,7 +112,7 @@ function labelFor(message: ChatLine): string {
     case "user":
       return "You";
     case "agent":
-      return "Codevia";
+      return "Spider";
     case "thinking":
       return "Thinking";
     case "error":
