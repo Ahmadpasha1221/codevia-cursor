@@ -64,7 +64,7 @@ export function createComposer(
       ? "Choose an AI provider to start chatting…"
       : running
         ? "The agent is running…"
-        : "Ask Codevia about your code…";
+        : "Ask Spider about your code…";
     send.textContent = running ? "Running…" : "Send";
     send.disabled = inputDisabled || textarea.value.trim().length === 0;
     retry.disabled = !canRetry || running;

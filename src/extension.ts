@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { COMMANDS, EXTENSION_NAME } from "./shared/constants";
+import { COMMANDS, EXTENSION_NAME, OPENROUTER_API_KEY_SECRET_KEY } from "./shared/constants";
 import { Logger } from "./utils/logger";
 import { CursorAuthProvider } from "./auth/cursorAuthProvider";
 import { VSCodeSecretStorageAdapter } from "./auth/secretStorage";
@@ -7,6 +7,7 @@ import { CursorClient } from "./auth/cursorClient";
 import { CursorConnectionService } from "./auth/cursorConnection";
 import { AgentManager } from "./agent/agentManager";
 import { SessionStore } from "./session/sessionStore";
+import { ProviderConfigStore } from "./session/providerConfigStore";
 import { TranscriptStore } from "./session/transcriptStore";
 import { MessageRouter } from "./webview/messageRouter";
 import { AgentViewProvider } from "./webview/agentViewProvider";
@@ -16,6 +17,7 @@ import { RuntimeManager } from "./runtime/runtimeManager";
 import { MockRuntime } from "./runtime/mock/mockRuntime";
 import { OllamaRuntime } from "./runtime/ollama/ollamaRuntime";
 import { OpenAICompatibleRuntime } from "./runtime/openaiCompatible/openaiCompatibleRuntime";
+import { OpenRouterRuntime } from "./runtime/openrouter/openRouterRuntime";
 import { WorkspaceToolExecutor } from "./runtime/tools/workspaceToolExecutor";
 import { DiffViewService } from "./runtime/review/diffView";
 
@@ -33,7 +35,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.authentication.registerAuthenticationProvider(
       "codeviaCursor",
-      "Codevia Cursor",
+      "Spider",
       authProvider,
       { supportsMultipleAccounts: false },
     ),
@@ -46,25 +48,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   const sessionStore = new SessionStore(context.workspaceState);
+  const providerConfigStore = new ProviderConfigStore(context.workspaceState);
   const transcriptStore = new TranscriptStore(context.globalStorageUri);
   const agentManager = new AgentManager(cursorClient, sessionStore, permissionManager, transcriptStore);
   const diffView = new DiffViewService();
   const runtimeManager = new RuntimeManager({
     sessionStore,
     permissionManager,
-    runtimes: [new OllamaRuntime(), new OpenAICompatibleRuntime(), new MockRuntime()],
+    runtimes: [new OllamaRuntime(), new OpenAICompatibleRuntime(), new OpenRouterRuntime(), new MockRuntime()],
     logger,
     toolExecutor: new WorkspaceToolExecutor(),
     defaultWorkspacePath: getWorkspacePath(),
     transcriptStore,
     diffView,
+    providerConfigStore,
   });
   const messageRouter = new MessageRouter(
-    agentManager,
-    getWorkspacePath(),
-    connection,
-    cursorClient,
-    runtimeManager,
+    agentManager, getWorkspacePath(), connection, cursorClient, runtimeManager, secretStorage,
   );
   const agentViewProvider = new AgentViewProvider(
     context.extensionUri,
@@ -84,6 +84,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await agentManager.restoreSessions();
   await runtimeManager.restoreSessions();
+
+  // Restore the previously saved provider/model so the user is not asked to
+  // configure the provider again. Secrets are never persisted: the OpenRouter
+  // key is re-attached from VS Code SecretStorage when present.
+  const savedProviderConfig = await runtimeManager.restoreProviderConfig();
+  if (savedProviderConfig?.provider === "openrouter") {
+    const apiKey = await secretStorage.get(OPENROUTER_API_KEY_SECRET_KEY);
+    if (apiKey) {
+      await runtimeManager.setProvider({
+        provider: "openrouter",
+        apiKey,
+        ...(savedProviderConfig.modelId ? { modelId: savedProviderConfig.modelId } : {}),
+      });
+      if (runtimeManager.listSessions().length === 0) {
+        runtimeManager.createSession(getWorkspacePath());
+      }
+    } else {
+      logger.info("Saved OpenRouter provider found without a stored API key", { operation: "activate" });
+    }
+  }
 
   const openAgentCommand = vscode.commands.registerCommand(COMMANDS.openAgent, async () => {
     logger.info("Open agent command invoked", { operation: "openAgent" });
