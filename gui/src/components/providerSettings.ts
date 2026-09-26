@@ -8,6 +8,11 @@ export function renderProviderSettings(
     onProvider: (provider: RuntimeProvider) => void;
     onCursorConnect: (apiKey: string) => void;
     onCursorDisconnect: () => void;
+    onOpenRouterConnect: (apiKey: string) => void;
+    onOpenRouterDisconnect: () => void;
+    onRefreshOpenRouter: () => void;
+    onOpenRouterModel: (modelId: string) => void;
+    onOpenRouterSearch: (query: string) => void;
     onLocalProvider: (provider: LocalProvider) => void;
     onRefreshLocal: () => void;
     onLocalConnect: (baseUrl: string, apiKey: string, modelId: string) => void;
@@ -27,7 +32,7 @@ export function renderProviderSettings(
   providerLabel.textContent = "AI provider";
   const providerSelect = document.createElement("select");
   providerSelect.className = "select-control";
-  for (const [value, label] of [["cursor", "Cursor"], ["local", "Local AI"], ["mock", "Mock / Test"]] as const) {
+  for (const [value, label] of [["cursor", "Cursor"], ["local", "Local AI"], ["openrouter", "OpenRouter"], ["mock", "Mock / Test"]] as const) {
     const option = document.createElement("option");
     option.value = value;
     option.textContent = label;
@@ -42,6 +47,8 @@ export function renderProviderSettings(
     renderCursor(section, state, handlers);
   } else if (state.provider === "local") {
     renderLocal(section, state, handlers);
+  } else if (state.provider === "openrouter") {
+    renderOpenRouter(section, state, handlers);
   } else {
     renderMock(section, handlers);
   }
@@ -138,7 +145,7 @@ function renderLocal(root: HTMLElement, state: AppState, handlers: Parameters<ty
 
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Use models running on your machine. Codevia discovers installed models through the local provider.";
+  hint.textContent = "Use models running on your machine. Spider discovers installed models through the local provider.";
   card.appendChild(hint);
 
   const providerField = document.createElement("div");
@@ -244,10 +251,170 @@ function renderLocal(root: HTMLElement, state: AppState, handlers: Parameters<ty
   root.appendChild(card);
 }
 
+function renderOpenRouter(root: HTMLElement, state: AppState, handlers: Parameters<typeof renderProviderSettings>[2]): void {
+  const card = document.createElement("div");
+  card.className = "provider-card";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "OpenRouter";
+  card.appendChild(heading);
+
+  const hint = document.createElement("p");
+  hint.className = "hint";
+  hint.textContent = "Use any model from the OpenRouter catalog. Your API key is stored in VS Code secure storage.";
+  card.appendChild(hint);
+
+  const status = document.createElement("div");
+  status.className = `connection-state ${state.runtimeError ? "is-error" : ""}`;
+  status.textContent = state.openRouterLoading
+    ? "Loading OpenRouter models…"
+    : state.runtimeConnected
+      ? "Connected"
+      : "Not connected";
+  card.appendChild(status);
+
+  const keyField = document.createElement("div");
+  keyField.className = "field";
+  const keyLabel = document.createElement("label");
+  keyLabel.textContent = state.runtimeConnected ? "Replace OpenRouter API key" : "OpenRouter API key";
+  const keyInput = document.createElement("input");
+  keyInput.id = "openrouter-api-key";
+  keyInput.type = "password";
+  keyInput.autocomplete = "off";
+  keyInput.placeholder = "Paste your OpenRouter API key (sk-or-…)";
+  keyInput.disabled = state.openRouterLoading;
+  keyField.append(keyLabel, keyInput);
+  card.appendChild(keyField);
+
+  const connect = document.createElement("button");
+  connect.className = "btn";
+  connect.textContent = state.runtimeConnected ? "Update key and connect" : "Save and connect";
+  connect.disabled = state.openRouterLoading;
+  connect.onclick = () => {
+    const value = keyInput.value.trim();
+    if (value.length === 0) return;
+    handlers.onOpenRouterConnect(value);
+    keyInput.value = "";
+  };
+  card.appendChild(connect);
+
+  if (state.runtimeConnected) {
+    const disconnect = document.createElement("button");
+    disconnect.className = "btn btn-danger";
+    disconnect.textContent = "Disconnect";
+    disconnect.disabled = state.openRouterLoading;
+    disconnect.onclick = handlers.onOpenRouterDisconnect;
+    card.appendChild(disconnect);
+  }
+
+  // Model picker: search box plus dropdown populated from the live catalog.
+  const modelField = document.createElement("div");
+  modelField.className = "field";
+  const modelLabel = document.createElement("label");
+  modelLabel.textContent = "Model (from the OpenRouter catalog)";
+  modelField.appendChild(modelLabel);
+
+  const search = document.createElement("input");
+  search.id = "openrouter-model-search";
+  search.type = "search";
+  search.placeholder = "Filter models by name or id…";
+  search.value = state.openRouterModelFilter;
+  search.oninput = () => handlers.onOpenRouterSearch(search.value);
+  modelField.appendChild(search);
+
+  const modelSelect = document.createElement("select");
+  modelSelect.id = "openrouter-model-select";
+  modelSelect.className = "select-control";
+  const filteredModels = filterModels(state.openRouterModels, state.openRouterModelFilter);
+  if (filteredModels.length === 0) {
+    const option = document.createElement("option");
+    option.textContent = state.openRouterLoading
+      ? "Loading models…"
+      : state.openRouterModels.length === 0
+        ? "No models loaded — connect or refresh"
+        : "No models match the filter";
+    option.disabled = true;
+    option.selected = true;
+    modelSelect.appendChild(option);
+  } else {
+    for (const model of filteredModels) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = modelDropdownLabel(model);
+      option.selected = model.id === state.selectedModelId;
+      modelSelect.appendChild(option);
+    }
+  }
+  modelSelect.disabled = filteredModels.length === 0;
+  modelSelect.onchange = () => handlers.onOpenRouterModel(modelSelect.value);
+  modelField.appendChild(modelSelect);
+  card.appendChild(modelField);
+
+  const actions = document.createElement("div");
+  actions.className = "form-actions";
+  const refresh = document.createElement("button");
+  refresh.className = "btn btn-ghost";
+  refresh.textContent = "Refresh models";
+  refresh.disabled = state.openRouterLoading;
+  refresh.onclick = handlers.onRefreshOpenRouter;
+  actions.appendChild(refresh);
+  card.appendChild(actions);
+
+  const meta = document.createElement("div");
+  meta.className = "hint";
+  const selected = state.openRouterModels.find((model) => model.id === state.selectedModelId);
+  meta.textContent = selected ? modelMetadataLine(selected) : "";
+  card.appendChild(meta);
+
+  root.appendChild(card);
+}
+
+function filterModels(models: AppState["openRouterModels"], query: string): AppState["openRouterModels"] {
+  const trimmed = query.trim().toLowerCase();
+  if (trimmed.length === 0) {
+    return models;
+  }
+  return models.filter(
+    (model) => model.id.toLowerCase().includes(trimmed) || model.name.toLowerCase().includes(trimmed),
+  );
+}
+
+/** Dropdown label: human name plus capability flags; full id shows in metadata. */
+function modelDropdownLabel(model: AppState["openRouterModels"][number]): string {
+  const flags: string[] = [];
+  if (model.toolCalling) flags.push("tools");
+  if (model.vision) flags.push("vision");
+  const suffix = flags.length > 0 ? ` [${flags.join(", ")}]` : "";
+  return `${model.name}${suffix}`;
+}
+
+/** One-line metadata summary shown under the model picker. */
+function modelMetadataLine(model: AppState["openRouterModels"][number]): string {
+  const parts: string[] = [model.id];
+  if (model.contextWindow !== undefined) {
+    parts.push(`context ${formatContextLength(model.contextWindow)}`);
+  }
+  if (model.pricing?.promptUsdPerMillion !== undefined || model.pricing?.completionUsdPerMillion !== undefined) {
+    parts.push(`$${formatPrice(model.pricing.promptUsdPerMillion)} in / $${formatPrice(model.pricing.completionUsdPerMillion)} out per 1M tokens`);
+  }
+  return parts.join(" · ");
+}
+
+function formatContextLength(contextWindow: number): string {
+  return contextWindow >= 1_000_000
+    ? `${(contextWindow / 1_000_000).toFixed(contextWindow % 1_000_000 === 0 ? 0 : 1)}M`
+    : `${Math.round(contextWindow / 1000)}K`;
+}
+
+function formatPrice(price: number | undefined): string {
+  if (price === undefined) return "?";
+  return price === 0 ? "0" : price < 0.1 ? price.toFixed(3) : price.toFixed(2);
+}
+
 function renderMock(root: HTMLElement, handlers: Parameters<typeof renderProviderSettings>[2]): void {
   const card = document.createElement("div");
   card.className = "provider-card";
-  card.innerHTML = `<h2>Mock / Test</h2><p class="hint">Test the Codevia UI and agent flow without a Cursor API key, local model, or external network request.</p>`;
+  card.innerHTML = `<h2>Mock / Test</h2><p class="hint">Test the Spider UI and agent flow without a Cursor API key, local model, or external network request.</p>`;
   const status = document.createElement("div");
   status.className = "connection-state is-connected";
   status.textContent = "Ready — no external AI service required";
