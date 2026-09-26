@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Fixed
+
+* OpenAI-compatible tool-call history (OpenRouter and any OpenAI-compatible provider): assistant tool calls and their ids are now preserved in conversation history, and every tool result is sent with `tool_call_id` set to the exact id of the corresponding assistant tool call — including parallel tool calls. Previously tool results were serialized without `tool_call_id`, so the second model request failed with `messages[N]: tool messages must include a non-empty string tool_call_id` and the malformed history then broke every later message in the session. Provider-supplied call ids are preserved end to end (streaming accumulation included); missing ids fail explicitly instead of sending an invalid request.
+
+### Added
+
+* Provider settings persist across restarts using the extension's existing workspace state: provider, base URL, and selected model are restored automatically on activation. The OpenRouter API key is never persisted to settings — it is re-attached from VS Code `SecretStorage`. Existing Ollama behavior is unchanged.
+* Dedicated **History** page in the sidebar: previous conversations are listed (newest first) and open through the existing transcript/session mechanism. The user-facing "Session" terminology is now "History"; internal identifiers are unchanged.
+
+### Changed
+
+* User-facing product name is now **Spider** (UI header, welcome text, settings, labels, and command categories). Internal identifiers, file names, package name, extension id, storage keys, and APIs are unchanged.
+
+### Added
+
+* OpenRouter provider with live model discovery: after connecting with an API key, the model dropdown is populated from OpenRouter's `/models` catalog (no hardcoded list) with name, model ID, context length, tool-calling/vision capability, and per-million-token pricing where available. A searchable picker selects the model; **Refresh models** re-fetches the catalog without an extension restart.
+* OpenRouter API keys are stored in VS Code `SecretStorage` (`codeviaCursor.openrouter.key`) and are never logged, displayed, or embedded in URLs.
+* OpenRouter inference uses its OpenAI-compatible chat endpoint through the existing Agent Loop, Tool Registry, Tool Router, permission flow, and workspace executors. Tool calling is enabled from the selected model's capability metadata rather than model-name checks.
+* New unit tests for OpenRouter model discovery, error mapping (invalid key, rate limit, network failure, empty catalog, unavailable model), and the OpenRouter webview message paths.
+
 ### Changed
 
 * Agent/tool selection now follows the Continue/Roo production pattern end to end: the model receives tool schemas generated from the Tool Registry and selects every tool itself. No keyword or intent routing exists anywhere in the codebase.
