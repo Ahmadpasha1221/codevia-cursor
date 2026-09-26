@@ -1,6 +1,6 @@
 {
   "name": "codevia-cursor",
-  "displayName": "Codevia Cursor",
+  "displayName": "Spider",
   "version": "0.1.0",
   "publisher": "codevia",
   "description": "A production-quality VS Code AI coding agent using the official Cursor TypeScript SDK.",
@@ -45,7 +45,7 @@
     "providers": [
       {
         "id": "codeviaCursor",
-        "label": "Codevia Cursor",
+        "label": "Spider",
         "supportsMultipleAccounts": false
       }
     ]
@@ -55,7 +55,7 @@
       "activitybar": [
         {
           "id": "codeviaCursor",
-          "title": "Codevia Cursor",
+          "title": "Spider",
           "icon": "$(robot)"
         }
       ]
@@ -73,12 +73,12 @@
       {
         "command": "codeviaCursor.openAgent",
         "title": "Open Agent",
-        "category": "Codevia Cursor"
+        "category": "Spider"
       },
       {
         "command": "codeviaCursor.openSettings",
         "title": "Open Settings",
-        "category": "Codevia Cursor"
+        "category": "Spider"
       }
     ]
   },
