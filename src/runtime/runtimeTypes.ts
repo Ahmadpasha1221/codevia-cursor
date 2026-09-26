@@ -1,7 +1,7 @@
 import type { PermissionRequest } from "../permissions/permissionTypes";
 import type { AgentMode } from "./tools/toolAvailability";
 
-export type RuntimeProvider = "cursor" | "ollama" | "openai-compatible" | "mock";
+export type RuntimeProvider = "cursor" | "ollama" | "openai-compatible" | "openrouter" | "mock";
 
 export type RuntimeProviderFamily = "agent" | "inference" | "mock";
 
@@ -11,6 +11,8 @@ export interface ModelCapabilities {
   readonly structuredOutput: boolean;
   readonly codeEditing?: boolean;
   readonly reasoning?: boolean;
+  /** Model can accept images in chat messages. */
+  readonly vision?: boolean;
 }
 
 export interface RuntimeUsage {
@@ -35,12 +37,20 @@ export interface FileChangeSummary {
   readonly appliedAt: number;
 }
 
+export interface ModelPricing {
+  /** USD per one million prompt tokens. */
+  readonly promptUsdPerMillion?: number;
+  /** USD per one million completion tokens. */
+  readonly completionUsdPerMillion?: number;
+}
+
 export interface RuntimeModel {
   readonly id: string;
   readonly name: string;
   readonly provider: RuntimeProvider;
   readonly contextWindow?: number;
   readonly capabilities?: ModelCapabilities;
+  readonly pricing?: ModelPricing;
 }
 
 export type RuntimeSessionStatus =
@@ -231,6 +241,12 @@ export type OpenAICompatibleRuntimeConfig = {
   readonly apiKey?: string;
 };
 
+export type OpenRouterRuntimeConfig = {
+  readonly provider: "openrouter";
+  readonly modelId?: string;
+  readonly apiKey?: string;
+};
+
 export type MockRuntimeConfig = {
   readonly provider: "mock";
   readonly scenario?: MockRuntimeScenario;
@@ -252,6 +268,7 @@ export type RuntimeProviderConfig =
   | CursorRuntimeConfig
   | OllamaRuntimeConfig
   | OpenAICompatibleRuntimeConfig
+  | OpenRouterRuntimeConfig
   | MockRuntimeConfig;
 
 export interface ResolvedRuntimeConfig {

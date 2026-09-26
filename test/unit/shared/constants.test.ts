@@ -7,7 +7,7 @@ describe("constants", () => {
   });
 
   it("exports the extension display name", () => {
-    expect(EXTENSION_NAME).toBe("Codevia Cursor");
+    expect(EXTENSION_NAME).toBe("Spider");
   });
 
   it("exports stable command ids", () => {
