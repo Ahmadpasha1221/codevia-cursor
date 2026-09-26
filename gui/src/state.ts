@@ -1,10 +1,11 @@
-import type { AuthStatus, LocalModel, LocalProvider, RuntimeProvider, SessionListItem } from "./protocol";
+import type { AuthStatus, FileChangeView, LocalModel, LocalProvider, RuntimeProvider, SessionListItem } from "./protocol";
 
 export type AppView = "chat" | "settings";
 
 export interface ChatLine {
   role: "user" | "agent" | "thinking" | "error" | "system";
   text: string;
+  streaming?: boolean;
   permission?: {
     requestId: string;
     command?: string;
@@ -18,6 +19,7 @@ export interface ChatLine {
     exitCode?: number | null;
     running?: boolean;
   };
+  fileChange?: FileChangeView;
 }
 
 export interface AppState {
@@ -40,6 +42,8 @@ export interface AppState {
   activeSessionId?: string;
   messages: ChatLine[];
   lastPrompt?: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number; costUsd?: number };
+  modelCapabilities?: { streaming: boolean; toolCalling: boolean; reasoning?: boolean };
 }
 
 export function createInitialState(): AppState {

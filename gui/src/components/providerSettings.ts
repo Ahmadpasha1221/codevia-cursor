@@ -15,6 +15,7 @@ export function renderProviderSettings(
     onMock: () => void;
   },
 ): void {
+  const savedValues = captureInputValues(root);
   root.replaceChildren();
 
   const section = document.createElement("div");
@@ -46,6 +47,36 @@ export function renderProviderSettings(
   }
 
   root.appendChild(section);
+  restoreInputValues(root, savedValues);
+}
+
+/**
+ * Async status updates re-render settings while the user is typing. Snapshot
+ * the current field values beforehand and put them back after the rebuild.
+ */
+type FieldElement = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+
+function captureInputValues(root: HTMLElement): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const field of Array.from(root.querySelectorAll("input, select, textarea")) as FieldElement[]) {
+    const key = field.id || field.name;
+    if (key) {
+      values.set(key, field.value);
+    }
+  }
+  return values;
+}
+
+function restoreInputValues(root: HTMLElement, values: Map<string, string>): void {
+  if (values.size === 0) {
+    return;
+  }
+  for (const field of Array.from(root.querySelectorAll("input, select, textarea")) as FieldElement[]) {
+    const key = field.id || field.name;
+    if (key && values.has(key) && field.value !== values.get(key)) {
+      field.value = values.get(key) ?? field.value;
+    }
+  }
 }
 
 function renderCursor(root: HTMLElement, state: AppState, handlers: Parameters<typeof renderProviderSettings>[2]): void {
@@ -63,6 +94,7 @@ function renderCursor(root: HTMLElement, state: AppState, handlers: Parameters<t
   const label = document.createElement("label");
   label.textContent = state.hasKey ? "Replace Cursor API key" : "Cursor API key";
   const input = document.createElement("input");
+  input.id = "cursor-api-key";
   input.type = "password";
   input.autocomplete = "off";
   input.placeholder = "Paste your Cursor API key";
