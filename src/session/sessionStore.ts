@@ -1,0 +1,147 @@
+import * as vscode from "vscode";
+import { AgentErrorInfo, AgentSession, AgentStatus } from "../agent/agentSession";
+
+const SESSIONS_STORAGE_KEY = "codeviaCursor.sessions";
+const ACTIVE_SESSION_STORAGE_KEY = "codeviaCursor.activeSession";
+
+const AGENT_STATUSES: readonly AgentStatus[] = [
+  "IDLE",
+  "STARTING",
+  "READY",
+  "RUNNING",
+  "CANCELLING",
+  "COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "DISCONNECTED",
+];
+
+export class SessionStore {
+  constructor(private readonly workspaceState: vscode.Memento) {}
+
+  loadSessions(): AgentSession[] {
+    const raw = this.workspaceState.get<unknown>(SESSIONS_STORAGE_KEY, []);
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw
+      .filter(isRawSession)
+      .map(deserializeSession)
+      .filter((session): session is AgentSession => session !== undefined);
+  }
+
+  loadActiveSessionId(): string | undefined {
+    const sessionId = this.workspaceState.get<unknown>(ACTIVE_SESSION_STORAGE_KEY);
+    return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+  }
+
+  async saveSessions(sessions: readonly AgentSession[]): Promise<void> {
+    const raw = sessions.map(serializeSession);
+    await this.workspaceState.update(SESSIONS_STORAGE_KEY, raw);
+  }
+
+  async saveActiveSessionId(sessionId: string | undefined): Promise<void> {
+    await this.workspaceState.update(ACTIVE_SESSION_STORAGE_KEY, sessionId);
+  }
+
+  async clearSessions(): Promise<void> {
+    await Promise.all([
+      this.workspaceState.update(SESSIONS_STORAGE_KEY, undefined),
+      this.workspaceState.update(ACTIVE_SESSION_STORAGE_KEY, undefined),
+    ]);
+  }
+}
+
+interface RawSession {
+  sessionId: string;
+  agentId?: string;
+  runId?: string;
+  workspacePath: string;
+  status: AgentStatus;
+  createdAt: string;
+  updatedAt: string;
+  currentTask?: string;
+  error?: AgentErrorInfo;
+}
+
+function serializeSession(session: AgentSession): RawSession {
+  return {
+    sessionId: session.sessionId,
+    agentId: session.agentId,
+    runId: session.runId,
+    workspacePath: session.workspacePath,
+    status: session.status,
+    createdAt: session.createdAt.toISOString(),
+    updatedAt: session.updatedAt.toISOString(),
+    currentTask: session.currentTask,
+    error: session.error,
+  };
+}
+
+function deserializeSession(raw: RawSession): AgentSession | undefined {
+  const createdAt = new Date(raw.createdAt);
+  const updatedAt = new Date(raw.updatedAt);
+
+  if (Number.isNaN(createdAt.getTime()) || Number.isNaN(updatedAt.getTime())) {
+    return undefined;
+  }
+
+  return {
+    sessionId: raw.sessionId,
+    agentId: raw.agentId,
+    runId: raw.runId,
+    workspacePath: raw.workspacePath,
+    status: raw.status,
+    createdAt,
+    updatedAt,
+    currentTask: raw.currentTask,
+    error: raw.error,
+  };
+}
+
+function isRawSession(value: unknown): value is RawSession {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (
+    typeof value.sessionId !== "string" ||
+    typeof value.workspacePath !== "string" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string" ||
+    !isAgentStatus(value.status)
+  ) {
+    return false;
+  }
+
+  if (value.agentId !== undefined && typeof value.agentId !== "string") {
+    return false;
+  }
+
+  if (value.runId !== undefined && typeof value.runId !== "string") {
+    return false;
+  }
+
+  if (value.currentTask !== undefined && typeof value.currentTask !== "string") {
+    return false;
+  }
+
+  if (value.error !== undefined && !isAgentError(value.error)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isAgentStatus(value: unknown): value is AgentStatus {
+  return typeof value === "string" && AGENT_STATUSES.includes(value as AgentStatus);
+}
+
+function isAgentError(value: unknown): value is AgentErrorInfo {
+  return isRecord(value) && typeof value.message === "string" && typeof value.category === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

@@ -1,0 +1,125 @@
+{
+  "name": "codevia-cursor",
+  "displayName": "Codevia Cursor",
+  "version": "0.1.0",
+  "publisher": "codevia",
+  "description": "A production-quality VS Code AI coding agent using the official Cursor TypeScript SDK.",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0",
+    "node": ">=22.13"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "cursor",
+    "ai",
+    "agent",
+    "coding",
+    "cursor-sdk"
+  ],
+  "icon": "assets/icon.png",
+  "galleryBanner": {
+    "color": "#7C3AED",
+    "theme": "dark"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited"
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onCommand:codeviaCursor.openAgent",
+    "onCommand:codeviaCursor.openSettings",
+    "onAuthentication:codeviaCursor"
+  ],
+  "authentication": {
+    "providers": [
+      {
+        "id": "codeviaCursor",
+        "label": "Codevia Cursor",
+        "supportsMultipleAccounts": false
+      }
+    ]
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codeviaCursor",
+          "title": "Codevia Cursor",
+          "icon": "$(robot)"
+        }
+      ]
+    },
+    "views": {
+      "codeviaCursor": [
+        {
+          "type": "webview",
+          "id": "codeviaCursor.agent",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "codeviaCursor.openAgent",
+        "title": "Open Agent",
+        "category": "Codevia Cursor"
+      },
+      {
+        "command": "codeviaCursor.openSettings",
+        "title": "Open Settings",
+        "category": "Codevia Cursor"
+      }
+    ]
+  },
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test --max-warnings 0",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:integration": "vscode-test",
+    "vscode:prepublish": "pnpm run typecheck && pnpm run lint && pnpm run compile",
+    "package": "vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "@cursor/sdk": "1.0.31"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.0",
+    "@types/node": "^22.13.0",
+    "@types/vscode": "^1.95.0",
+    "@eslint/js": "^9.39.5",
+    "@typescript-eslint/eslint-plugin": "^8.22.0",
+    "@typescript-eslint/parser": "^8.22.0",
+    "@typescript-eslint/utils": "^8.22.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.15.0",
+    "prettier": "^3.4.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/codevia/codevia-cursor"
+  },
+  "bugs": {
+    "url": "https://github.com/codevia/codevia-cursor/issues"
+  },
+  "homepage": "https://github.com/codevia/codevia-cursor#readme"
+}
