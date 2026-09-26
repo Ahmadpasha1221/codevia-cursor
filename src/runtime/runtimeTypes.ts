@@ -75,6 +75,7 @@ export interface RuntimeToolCallResponse {
   readonly allowed: boolean;
   readonly result?: unknown;
   readonly error?: string;
+  readonly finished?: boolean;
 }
 
 export type RuntimeErrorCode =
@@ -133,6 +134,7 @@ export interface RuntimeSendRequest {
   readonly workspacePath: string;
   readonly modelId?: string;
   readonly prompt: string;
+  readonly retry?: boolean;
   readonly messages?: readonly RuntimeMessage[];
   readonly signal?: AbortSignal;
   readonly onToolCall?: (
@@ -154,7 +156,18 @@ export type RuntimeEvent =
   | { type: "text_delta"; sessionId: string; text: string; timestamp: number }
   | { type: "assistant_message"; sessionId: string; message: string; timestamp: number }
   | { type: "tool_call"; sessionId: string; toolCall: RuntimeToolCall; timestamp: number }
+  | { type: "tool_running"; sessionId: string; toolCall: RuntimeToolCall; timestamp: number }
   | { type: "tool_result"; sessionId: string; toolResult: RuntimeToolResult; timestamp: number }
+  | {
+      type: "command_output";
+      sessionId: string;
+      command: string;
+      cwd?: string;
+      stdout: string;
+      stderr: string;
+      exitCode: number | null;
+      timestamp: number;
+    }
   | { type: "permission_request"; sessionId: string; request: PermissionRequest; timestamp: number }
   | { type: "error"; sessionId: string; error: RuntimeError; timestamp: number }
   | { type: "completed"; sessionId: string; timestamp: number }

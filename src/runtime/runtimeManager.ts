@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { PermissionManager } from "../permissions/permissionManager";
 import type { SessionStore } from "../session/sessionStore";
 import type { Logger } from "../utils/logger";
+import { ToolRouter } from "./tools/toolRouter";
 import {
   AgentRuntime,
   CodeviaSession,
@@ -39,11 +40,14 @@ export class RuntimeManager implements vscode.Disposable {
   private activeProvider?: RuntimeProviderConfig["provider"];
   private activeConfig?: RuntimeProviderConfig;
   private activeSessionId?: string;
+  private readonly lastPrompts = new Map<string, string>();
+  private readonly toolRouter: ToolRouter;
 
   readonly onDidPublishEvent = this.emitter.event;
 
   constructor(private readonly options: RuntimeManagerOptions) {
     this.persistenceQueue = Promise.resolve();
+    this.toolRouter = new ToolRouter(options.toolExecutor);
     for (const runtime of options.runtimes) {
       this.runtimes.set(runtime.provider, runtime);
     }
@@ -65,10 +69,16 @@ export class RuntimeManager implements vscode.Disposable {
   }
 
   async setProvider(config: RuntimeProviderConfig): Promise<void> {
+    for (const sessionId of Array.from(this.activeRuns.keys())) {
+      await this.cancelTask(sessionId);
+    }
     const runtime = this.getRequiredRuntime(config.provider);
     await runtime.configure(config);
     this.activeProvider = config.provider;
     this.activeConfig = config;
+    if (this.activeSessionId && "modelId" in config) {
+      this.updateSession(this.activeSessionId, { modelId: config.modelId, status: "IDLE", currentTask: undefined });
+    }
     this.options.logger?.info("Runtime provider selected", {
       operation: "setProvider",
       sessionId: this.activeSessionId,
@@ -206,6 +216,9 @@ export class RuntimeManager implements vscode.Disposable {
     this.activeSessionId = undefined;
 
     for (const session of loaded) {
+      if (session.provider === "cursor") {
+        continue;
+      }
       const restored: CodeviaSession = {
         ...session,
         status: this.isNonTerminal(session.status) ? "DISCONNECTED" : session.status,
@@ -236,14 +249,20 @@ export class RuntimeManager implements vscode.Disposable {
     sessionId: string,
     prompt: string,
     cancellationToken?: vscode.CancellationToken,
+    retry = false,
   ): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new RuntimeError("session_not_found", `Session not found: ${sessionId}`);
     }
     if (session.status === "RUNNING" || session.status === "STARTING") {
-      throw new RuntimeError("invalid_configuration", `Session is already running: ${sessionId}`);
+      if (!retry) {
+        throw new RuntimeError("invalid_configuration", `Session is already running: ${sessionId}`);
+      }
+      await this.cancelTask(sessionId);
     }
+
+    this.lastPrompts.set(sessionId, prompt);
 
     const runtime = this.getRequiredRuntime(session.provider);
     const controller = new AbortController();
@@ -279,31 +298,57 @@ export class RuntimeManager implements vscode.Disposable {
           workspacePath: session.workspacePath,
           modelId: session.modelId ?? this.getModelId(session.provider),
           prompt,
+          retry,
           signal: controller.signal,
-          onToolCall: (call, signal) => this.handleToolCall(session, call, runtime, signal),
+          onToolCall: (call, signal) => this.handleToolCall(sessionId, call, signal),
         },
         (event) => this.handleRuntimeEvent(sessionId, event),
       );
 
-      if (!controller.signal.aborted && session.status === "READY") {
-        this.updateSession(sessionId, { status: "COMPLETED" });
-        this.publishEvent({ type: "completed", sessionId, timestamp: Date.now() });
+      if (!controller.signal.aborted) {
+        const currentSession = this.sessions.get(sessionId);
+        if (currentSession && !["COMPLETED", "CANCELLED", "FAILED", "DISCONNECTED"].includes(currentSession.status)) {
+          this.updateSession(sessionId, { status: "COMPLETED", currentTask: undefined });
+          this.publishEvent({ type: "completed", sessionId, timestamp: Date.now() });
+        }
       }
     } catch (error) {
       const runtimeError = this.toRuntimeError(error, "run");
-      if (runtimeError.code !== "cancelled") {
-        this.updateSession(sessionId, {
-          status: "FAILED",
-          error: { message: runtimeError.message, category: runtimeError.code },
-        });
-        this.publishEvent({ type: "error", sessionId, error: runtimeError, timestamp: Date.now() });
+      if (runtimeError.code === "cancelled") {
+        const currentSession = this.sessions.get(sessionId);
+        if (currentSession && currentSession.status !== "CANCELLED") {
+          this.updateSession(sessionId, { status: "CANCELLED", currentTask: undefined });
+          this.publishEvent({ type: "cancelled", sessionId, timestamp: Date.now() });
+        }
+        return;
       }
+      this.updateSession(sessionId, {
+        status: "FAILED",
+        error: { message: runtimeError.message, category: runtimeError.code },
+      });
+      this.publishEvent({ type: "error", sessionId, error: runtimeError, timestamp: Date.now() });
       throw runtimeError;
     } finally {
       cancellationSubscription?.dispose();
       this.activeRuns.delete(sessionId);
       this.options.permissionManager.cancelSessionRequests(sessionId);
     }
+  }
+
+  async retryTask(sessionId: string, cancellationToken?: vscode.CancellationToken): Promise<void> {
+    const prompt = this.lastPrompts.get(sessionId) ?? this.sessions.get(sessionId)?.currentTask;
+    if (!prompt) {
+      throw new RuntimeError("invalid_configuration", "There is no previous prompt to retry.");
+    }
+    await this.startTask(sessionId, prompt, cancellationToken, true);
+  }
+
+  resolvePermission(requestId: string, decision: "ALLOW" | "DENY"): void {
+    this.options.permissionManager.resolveDecision({
+      requestId,
+      decision,
+      confirmation: decision === "ALLOW",
+    });
   }
 
   async cancelTask(sessionId: string): Promise<void> {
@@ -380,16 +425,26 @@ export class RuntimeManager implements vscode.Disposable {
   }
 
   private async handleToolCall(
-    session: CodeviaSession,
+    sessionId: string,
     call: RuntimeToolCall,
-    runtime: AgentRuntime,
     signal?: AbortSignal,
   ): Promise<RuntimeToolCallResponse> {
-    if (runtime.family === "inference" && !this.hasToolCallingCapability(session.modelId)) {
-      return {
-        allowed: false,
-        error: "This provider/model does not advertise tool calling.",
-      };
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { allowed: false, error: `Session not found: ${sessionId}`, result: { success: false, tool: call.name, error: "Session not found." } };
+    }
+
+    return this.toolRouter.route(call, { session, signal }, (toolCall, toolSignal) => this.authorizeTool(sessionId, toolCall, toolSignal));
+  }
+
+  private async authorizeTool(
+    sessionId: string,
+    call: RuntimeToolCall,
+    signal?: AbortSignal,
+  ): Promise<{ allowed: boolean; error?: string }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return { allowed: false, error: `Session not found: ${sessionId}` };
     }
 
     const input = isRecord(call.input) ? call.input : {};
@@ -398,7 +453,9 @@ export class RuntimeManager implements vscode.Disposable {
       ? input.file_path
       : typeof input.path === "string"
         ? input.path
-        : undefined;
+        : typeof input.from === "string"
+          ? input.from
+          : undefined;
     const request = this.options.permissionManager.buildRequest(
       session.sessionId,
       call.name,
@@ -406,35 +463,20 @@ export class RuntimeManager implements vscode.Disposable {
       path,
     );
 
-    this.publishEvent({ type: "permission_request", sessionId: session.sessionId, request, timestamp: Date.now() });
-
     if (this.options.permissionManager.isBlockedByTrust(request)) {
       return { allowed: false, error: "The workspace trust policy blocked this tool." };
     }
-    if (this.options.permissionManager.shouldAutoAllow(request)) {
-      return { allowed: true };
-    }
 
-    const resolution = await this.options.permissionManager.requestPermission(request, signal);
-    if (resolution.status !== "allowed") {
-      return { allowed: false, error: `Permission ${resolution.status}.` };
-    }
-
-    if (this.options.toolExecutor) {
-      try {
-        return { allowed: true, result: await this.options.toolExecutor.execute(call, { session, signal }) };
-      } catch (error) {
-        return {
-          allowed: true,
-          error: error instanceof Error ? error.message : "Tool execution failed.",
-        };
+    if (!this.options.permissionManager.shouldAutoAllow(request)) {
+      const pending = this.options.permissionManager.requestPermission(request, signal);
+      this.publishEvent({ type: "permission_request", sessionId: session.sessionId, request, timestamp: Date.now() });
+      const resolution = await pending;
+      if (resolution.status !== "allowed") {
+        return { allowed: false, error: `Permission ${resolution.status}.` };
       }
     }
-    return { allowed: true };
-  }
 
-  private hasToolCallingCapability(_modelId?: string): boolean {
-    return false;
+    return { allowed: true };
   }
 
   private handleRuntimeEvent(sessionId: string, event: RuntimeEvent): void {
@@ -493,6 +535,9 @@ export class RuntimeManager implements vscode.Disposable {
     }
     const message = error instanceof Error ? error.message : String(error);
     const normalized = message.toLowerCase();
+    if ((error instanceof Error && error.name === "AbortError") || /cancelled/i.test(normalized)) {
+      return new RuntimeError("cancelled", "The runtime run was cancelled.", { cause: error });
+    }
     if (/not found|agent.*not.*found|unknown agent/i.test(normalized)) {
       return new RuntimeError("agent_not_found", "The provider agent no longer exists. A new provider session will be created.", {
         retryable: true,
