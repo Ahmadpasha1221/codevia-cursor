@@ -72,8 +72,18 @@ export class MessageRouter {
       case "NEW_SESSION": {
         const workspacePath = typed.workspacePath ?? this.defaultWorkspacePath;
         if (this.usesManagedRuntime() && this.runtimeManager) {
+          // Reuse the active conversation while it is still empty so repeated
+          // "New" clicks do not pile up blank sessions.
+          const active = this.runtimeManager.activeSession;
+          if (active && (await this.runtimeManager.loadTranscript(active.sessionId)).length === 0) {
+            return { success: true, session: active };
+          }
           const session = this.runtimeManager.createSession(workspacePath);
           return { success: true, session };
+        }
+        const activeAgent = this.agentManager.activeSession;
+        if (activeAgent && (await this.agentManager.loadTranscript(activeAgent.sessionId)).length === 0) {
+          return { success: true, session: activeAgent };
         }
         const session = this.agentManager.createSession(workspacePath);
         return { success: true, session };
@@ -252,6 +262,7 @@ export class MessageRouter {
         return {
           type: "AGENT_TOOL_CALL",
           toolCall: {
+            toolCallId: event.toolCall.id,
             toolName: event.toolCall.name,
             command: commandFromInput(event.toolCall.input),
             path: pathFromInput(event.toolCall.input),
@@ -262,12 +273,17 @@ export class MessageRouter {
       case "tool_result":
         return {
           type: "AGENT_TOOL_RESULT",
-          result: { toolName: event.toolResult.name, error: event.toolResult.error },
+          result: {
+            toolCallId: event.toolResult.toolCallId,
+            toolName: event.toolResult.name,
+            error: event.toolResult.error,
+          },
         };
       case "command_output":
         return {
           type: "AGENT_COMMAND_OUTPUT",
           command: event.command,
+          toolCallId: event.toolCallId,
           cwd: event.cwd,
           stdout: event.stdout,
           stderr: event.stderr,

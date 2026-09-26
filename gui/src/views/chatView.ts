@@ -16,9 +16,9 @@ export function renderChatView(
     || state.provider === "mock"
     || (state.provider === "local" && Boolean(state.selectedModelId) && !state.runtimeError);
   roots.composer.update({
-    disabled: !ready || !state.activeSessionId,
+    disabled: !ready || !state.activeSessionId || state.pendingNewConversation,
     running: state.running,
-    canRetry: Boolean(state.lastPrompt) && !state.running,
+    canRetry: Boolean(state.lastPrompt) && !state.running && !state.pendingNewConversation,
     readyForInput: ready,
   });
 }

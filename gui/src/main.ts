@@ -1,6 +1,6 @@
 import { onHostMessage, postToHost } from "./bridge";
-import type { FileChangeView, HostToGui, RuntimeProvider } from "./protocol";
-import { AppState, ChatLine, createInitialState } from "./state";
+import type { FileChangeView, HostToGui, RuntimeProvider, SessionListItem } from "./protocol";
+import { AppState, ChatLine, createInitialState, phaseFromAgentState } from "./state";
 import { createComposer } from "./components/composer";
 import { createHistoryList } from "./components/historyList";
 import { createMessageList } from "./components/messageList";
@@ -10,6 +10,12 @@ import { renderSettingsView } from "./views/settingsView";
 
 const state: AppState = createInitialState();
 
+/**
+ * Transcript staleness guard. A transcript reply is only applied when it is
+ * for the session the user actually asked to load (or is actively using).
+ * Optimistically starting a new conversation re-points this id immediately,
+ * so stale replies for the old conversation can never overwrite empty state.
+ */
 let loadedTranscriptSessionId: string | undefined;
 
 function isStaleTranscript(sessionId: string): boolean {
@@ -45,25 +51,18 @@ const composer = createComposer(composerRoot, {
   onRetry: retryLastPrompt,
 });
 const sessionBar = createSessionBar(sessionBarRoot, {
-  onSelect: (sessionId) => {
-    loadedTranscriptSessionId = sessionId;
-    state.activeSessionId = sessionId;
-    postToHost({ type: "SELECT_SESSION", sessionId });
-  },
-  onCreate: () => postToHost({ type: "NEW_SESSION" }),
+  onSelect: (sessionId) => selectSession(sessionId),
+  onCreate: () => startNewConversation(),
 });
 const historyList = createHistoryList(historyListRoot, {
   onOpen: (sessionId) => {
-    loadedTranscriptSessionId = sessionId;
-    state.activeSessionId = sessionId;
     state.view = "chat";
-    postToHost({ type: "SELECT_SESSION", sessionId });
-    postToHost({ type: "GET_TRANSCRIPT", sessionId });
+    selectSession(sessionId);
     render();
   },
   onNew: () => {
     state.view = "chat";
-    postToHost({ type: "NEW_SESSION" });
+    startNewConversation();
     render();
   },
 });
@@ -91,12 +90,60 @@ postToHost({ type: "GET_RUNTIME_STATUS" });
 postToHost({ type: "LIST_SESSIONS" });
 render();
 
+/**
+ * Activates an existing conversation immediately in the UI (optimistic), then
+ * asks the host for it. Re-pointing loadedTranscriptSessionId before the
+ * request is what makes the optimistic reset immune to stale transcript
+ * replies. GET_TRANSCRIPT on an unknown/empty session returns no TRANSCRIPT
+ * message, so the empty state survives until real content exists.
+ */
+function selectSession(sessionId: string): void {
+  loadedTranscriptSessionId = sessionId;
+  state.activeSessionId = sessionId;
+  state.pendingNewConversation = false;
+  state.running = false;
+  state.phase = "idle";
+  postToHost({ type: "SELECT_SESSION", sessionId });
+  postToHost({ type: "GET_TRANSCRIPT", sessionId });
+}
+
+/**
+ * New conversation lifecycle: reset the active conversation state immediately
+ * (empty chat, fresh active id semantics) and ask the host for a session.
+ * The host replies with SESSION_UPDATED for the new id; until then
+ * pendingNewConversation keeps the composer from sending into the old
+ * conversation. Repeated clicks are safe: when the active session is already
+ * an empty conversation, NEW_SESSION is not sent again (host-side dedupe too).
+ */
+function startNewConversation(): void {
+  if (state.pendingNewConversation) {
+    return;
+  }
+  const currentMessages = state.messages;
+  const activeIsEmpty = currentMessages.length === 0;
+  if (activeIsEmpty) {
+    // Already an empty active conversation: nothing to reset.
+    state.pendingNewConversation = false;
+    return;
+  }
+  state.pendingNewConversation = true;
+  state.activeSessionId = undefined;
+  loadedTranscriptSessionId = undefined;
+  state.messages = [];
+  state.lastPrompt = undefined;
+  state.running = false;
+  state.phase = "idle";
+  messageList.clear();
+  postToHost({ type: "NEW_SESSION" });
+}
+
 function handleSend(prompt: string): void {
-  loadedTranscriptSessionId = state.activeSessionId;
   sendPrompt(prompt);
 }
 
 function handleHostMessage(message: HostToGui): void {
+  let chatLineChanged = false;
+
   switch (message.type) {
     case "AUTH_STATUS":
       state.authStatus = message.status;
@@ -155,11 +202,7 @@ function handleHostMessage(message: HostToGui): void {
       state.view = "history";
       break;
     case "SESSION_UPDATED":
-      state.sessions = message.sessions;
-      state.activeSessionId = message.activeSessionId ?? message.sessions[0]?.sessionId;
-      if (state.activeSessionId && loadedTranscriptSessionId !== state.activeSessionId) {
-        postToHost({ type: "GET_TRANSCRIPT", sessionId: state.activeSessionId });
-      }
+      applySessionUpdate(message.sessions, message.activeSessionId);
       break;
     case "TRANSCRIPT": {
       if (isStaleTranscript(message.sessionId)) {
@@ -172,42 +215,29 @@ function handleHostMessage(message: HostToGui): void {
       break;
     }
     case "AGENT_STATE":
-      state.running = message.state === "starting" || message.state === "ready" || message.state === "running";
-      if (["completed", "cancelled", "failed", "disconnected", "idle"].includes(message.state)) {
-        state.running = false;
-      }
+      applyAgentState(message.state);
       break;
     case "AGENT_MESSAGE": {
       const text = sanitizeAgentMessage(message.message);
       if (text.length === 0) {
         break;
       }
-      const streamingLine = state.messages.find((line) => line.streaming);
-      if (streamingLine) {
-        streamingLine.streaming = false;
-        streamingLine.role = "agent";
-        streamingLine.text = text;
-      } else {
-        state.messages.push({ role: "agent", text });
-      }
-      messageList.replaceAll(state.messages);
+      messageList.finishStreamingLine(text);
+      chatLineChanged = true;
       break;
     }
     case "AGENT_TEXT_DELTA": {
       if (message.sessionId !== state.activeSessionId) {
         break;
       }
-      let streamingLine = state.messages.find((line) => line.streaming);
-      if (!streamingLine) {
-        streamingLine = { role: "agent", text: "", streaming: true };
-        state.messages.push(streamingLine);
-      }
-      streamingLine.text += message.text;
-      if (looksLikeRawToolJson(streamingLine.text)) {
+      let text = message.text;
+      if (looksLikeRawToolJson(text)) {
         // The model leaked a raw tool object into the stream; never show it.
-        streamingLine.text = "";
+        text = "";
       }
-      messageList.replaceAll(state.messages);
+      state.phase = "streaming";
+      messageList.upsertStreamingLine(text);
+      chatLineChanged = true;
       break;
     }
     case "AGENT_USAGE":
@@ -219,60 +249,85 @@ function handleHostMessage(message: HostToGui): void {
       };
       break;
     case "FILE_CHANGE":
-    case "FILE_CHANGE_REVERTED":
-      state.messages.push({
+    case "FILE_CHANGE_REVERTED": {
+      const line: ChatLine = {
         role: "system",
         text: fileChangeText(message.change, message.type === "FILE_CHANGE_REVERTED"),
         fileChange: message.change,
-      });
-      messageList.append(state.messages.slice(-1));
-      break;
-    case "AGENT_THINKING":
-      state.messages.push({ role: "thinking", text: message.message });
-      break;
-    case "AGENT_TOOL_CALL": {
-      const command = message.toolCall.command;
-      if (message.toolCall.toolName === "run_command" && command) {
-        state.messages.push({
-          role: "system",
-          text: `Running command:\n$ ${command}`,
-          command: { command, running: true },
-        });
-      } else {
-        state.messages.push({
-          role: "system",
-          text: `Using ${message.toolCall.toolName ?? "tool"}${message.toolCall.path ? ` ${message.toolCall.path}` : ""}`,
-        });
-      }
+      };
+      state.messages.push(line);
+      messageList.append([line]);
+      chatLineChanged = true;
       break;
     }
-    case "AGENT_TOOL_RESULT":
-      state.messages.push({
-        role: "system",
-        text: message.result.error
-          ? `${message.result.toolName ?? "tool"} failed: ${message.result.error}`
-          : `Completed ${message.result.toolName ?? "tool"}`,
-      });
+    case "AGENT_THINKING": {
+      const line: ChatLine = { role: "thinking", text: message.message };
+      state.messages.push(line);
+      messageList.append([line]);
+      chatLineChanged = true;
       break;
-    case "AGENT_COMMAND_OUTPUT":
-      state.messages.push({
-        role: "system",
-        text: formatCommandOutput(message.command, message.stdout, message.stderr, message.exitCode),
-        command: {
-          command: message.command,
-          stdout: message.stdout,
-          stderr: message.stderr,
-          exitCode: message.exitCode,
-          running: false,
-        },
-      });
+    }
+    case "AGENT_TOOL_CALL": {
+      // tool_requested: create the execution box; later events update it in place.
+      const toolCall = message.toolCall;
+      if (toolCall.toolName === "run_command" && toolCall.command) {
+        messageList.upsertCommandLine({ command: toolCall.command, running: true, toolCallId: toolCall.toolCallId });
+      } else {
+        messageList.upsertToolLine({
+          toolCallId: toolCall.toolCallId ?? `tool:${toolCall.toolName}`,
+          toolName: toolCall.toolName ?? "tool",
+          status: "running",
+          detail: toolCall.path,
+        });
+      }
+      state.phase = "toolRunning";
+      chatLineChanged = true;
       break;
-    case "AGENT_ERROR":
+    }
+    case "AGENT_TOOL_RESULT": {
+      const key = message.result.toolCallId ?? `tool:${message.result.toolName}`;
+      const isCommand = message.result.toolName === "run_command";
+      if (isCommand) {
+        // The command box already exists from AGENT_TOOL_CALL; flip its state
+        // in place. AGENT_COMMAND_OUTPUT (which arrives first, with the exit
+        // code and streamed output) already finalized the status chip.
+        messageList.completeCommandLine(message.result.toolCallId, message.result.error ? 1 : 0);
+      } else {
+        messageList.upsertToolLine({
+          toolCallId: key,
+          toolName: message.result.toolName ?? "tool",
+          status: message.result.error ? "failed" : "completed",
+          ...(message.result.error ? { error: message.result.error } : {}),
+        });
+      }
+      state.phase = "streaming";
+      chatLineChanged = true;
+      break;
+    }
+    case "AGENT_COMMAND_OUTPUT": {
+      messageList.upsertCommandLine({
+        command: message.command,
+        running: false,
+        stdout: message.stdout,
+        stderr: message.stderr,
+        exitCode: message.exitCode,
+        toolCallId: message.toolCallId,
+      });
+      chatLineChanged = true;
+      break;
+    }
+    case "AGENT_ERROR": {
       state.running = false;
-      state.messages.push({ role: "error", text: message.error });
+      state.phase = "failed";
+      messageList.finishStreamingLine("");
+      const errorLine: ChatLine = { role: "error", text: message.error };
+      state.messages.push(errorLine);
+      messageList.append([errorLine]);
+      chatLineChanged = true;
       break;
-    case "PERMISSION_REQUEST":
-      state.messages.push({
+    }
+    case "PERMISSION_REQUEST": {
+      const line: ChatLine = {
         role: "system",
         text: message.message,
         permission: {
@@ -281,15 +336,54 @@ function handleHostMessage(message: HostToGui): void {
           pending: true,
           destructive: message.destructive,
         },
-      });
+      };
+      state.messages.push(line);
+      messageList.append([line]);
+      chatLineChanged = true;
       break;
+    }
   }
 
   const known = pushesChatLine(message);
-  if (known) {
+  if (known && !chatLineChanged) {
+    // Fallback for any chat-line message not handled above.
     messageList.append(state.messages.slice(-1));
   }
-  render();
+  scheduleUiSync();
+}
+
+/** Session list arrived: adopt the host's active id and resolve pending New. */
+function applySessionUpdate(sessions: SessionListItem[], activeSessionId?: string): void {
+  state.sessions = sessions;
+  const hostActive = activeSessionId ?? sessions[0]?.sessionId;
+  if (state.pendingNewConversation) {
+    if (hostActive && hostActive !== state.activeSessionId) {
+      // The new conversation is confirmed: it is now active and empty.
+      state.activeSessionId = hostActive;
+      loadedTranscriptSessionId = hostActive;
+      state.messages = [];
+      messageList.clear();
+    }
+    // Stay pending until the host confirms a session we did not have before.
+    if (hostActive) {
+      state.pendingNewConversation = false;
+    }
+    return;
+  }
+  state.activeSessionId = hostActive;
+  if (state.activeSessionId && loadedTranscriptSessionId !== state.activeSessionId) {
+    postToHost({ type: "GET_TRANSCRIPT", sessionId: state.activeSessionId });
+  }
+}
+
+/** Backend AGENT_STATE is the source of truth for the phase machine. */
+function applyAgentState(agentState: string): void {
+  state.phase = phaseFromAgentState(agentState);
+  state.running = agentState === "starting" || agentState === "ready" || agentState === "running";
+  if (["completed", "cancelled", "failed", "disconnected", "idle"].includes(agentState)) {
+    state.running = false;
+    messageList.finishStreamingLine("");
+  }
 }
 
 const CHAT_LINE_MESSAGE_TYPES: ReadonlySet<HostToGui["type"]> = new Set([
@@ -304,6 +398,24 @@ const CHAT_LINE_MESSAGE_TYPES: ReadonlySet<HostToGui["type"]> = new Set([
 
 function pushesChatLine(message: HostToGui): boolean {
   return CHAT_LINE_MESSAGE_TYPES.has(message.type);
+}
+
+/**
+ * Single batched UI sync per event burst. Cheap state reads
+ * (textContent/hidden) stay synchronous; anything layout-affecting or
+ * burst-prone (streaming text, scroll) is already rAF-batched inside the
+ * message list.
+ */
+let uiSyncScheduled = false;
+function scheduleUiSync(): void {
+  if (uiSyncScheduled) {
+    return;
+  }
+  uiSyncScheduled = true;
+  requestAnimationFrame(() => {
+    uiSyncScheduled = false;
+    render();
+  });
 }
 
 function render(): void {
@@ -428,7 +540,7 @@ function discoverOpenRouterModels(): void {
 }
 
 function ensureSession(): void {
-  if (state.sessions.length === 0) postToHost({ type: "NEW_SESSION" });
+  if (state.sessions.length === 0 && !state.pendingNewConversation) postToHost({ type: "NEW_SESSION" });
 }
 
 function renderSetupBanner(): void {
@@ -456,24 +568,31 @@ function renderSetupBanner(): void {
 
 function sendPrompt(prompt: string): void {
   const trimmed = prompt.trim();
-  if (!trimmed || !state.activeSessionId || state.running) return;
+  if (!trimmed || state.running || state.pendingNewConversation) return;
+  if (!state.activeSessionId) {
+    // No active conversation: create one and queue nothing; the composer
+    // stays usable and the user can send again once the session exists.
+    startNewConversation();
+    return;
+  }
   loadedTranscriptSessionId = state.activeSessionId;
   state.lastPrompt = trimmed;
-  state.messages.push({ role: "user", text: trimmed });
-  messageList.append(state.messages.slice(-1));
   state.running = true;
+  state.phase = "submitting";
+  const line: ChatLine = { role: "user", text: trimmed };
+  state.messages.push(line);
+  messageList.append([line]);
   postToHost({ type: "SEND_PROMPT", prompt: trimmed, sessionId: state.activeSessionId });
-  render();
+  scheduleUiSync();
 }
 
 function retryLastPrompt(): void {
-  if (!state.lastPrompt || !state.activeSessionId || state.running) return;
+  if (!state.lastPrompt || !state.activeSessionId || state.running || state.pendingNewConversation) return;
   loadedTranscriptSessionId = state.activeSessionId;
-  state.messages.push({ role: "system", text: "Trying again with a fresh inference…" });
-  messageList.append(state.messages.slice(-1));
   state.running = true;
+  state.phase = "submitting";
   postToHost({ type: "TRY_AGAIN", sessionId: state.activeSessionId });
-  render();
+  scheduleUiSync();
 }
 
 function cancelRun(): void {
@@ -508,17 +627,7 @@ function toChatLine(entry: {
     case "error":
       return { role: "error", text: entry.text };
     case "command":
-      return {
-        role: "system",
-        text: formatCommandOutput(entry.command ?? entry.text, entry.stdout ?? "", entry.stderr ?? "", entry.exitCode ?? null),
-        command: {
-          command: entry.command ?? "",
-          stdout: entry.stdout,
-          stderr: entry.stderr,
-          exitCode: entry.exitCode,
-          running: false,
-        },
-      };
+      return { role: "system", text: "", command: { command: entry.command ?? "", stdout: entry.stdout, stderr: entry.stderr, exitCode: entry.exitCode, running: false } };
     case "tool":
       return { role: "system", text: toolTranscriptText(entry) };
     case "system":
@@ -596,10 +705,4 @@ function mustEl(id: string): HTMLElement {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing element #${id}`);
   return el;
-}
-
-function formatCommandOutput(command: string, stdout: string, stderr: string, exitCode: number | null): string {
-  const output = [stdout, stderr].filter((part) => part.length > 0).join("\n").trim();
-  const code = exitCode === null ? "cancelled" : String(exitCode);
-  return `Running command:\n$ ${command}\n\n${output.length > 0 ? output + "\n\n" : ""}Exit code: ${code}`;
 }

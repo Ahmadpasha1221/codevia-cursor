@@ -2,8 +2,14 @@ import type { AuthStatus, FileChangeView, LocalModel, LocalProvider, ModelInfo, 
 
 export type AppView = "chat" | "history" | "settings";
 
+/** Live agent execution phase, derived only from backend runtime events. */
+export type AgentPhase = "idle" | "submitting" | "streaming" | "toolRunning" | "completed" | "failed" | "cancelled";
+
+/** Lifecycle of one tool/command execution box. */
+export type ExecStatus = "running" | "completed" | "failed";
+
 export interface ChatLine {
-  role: "user" | "agent" | "thinking" | "error" | "system";
+  role: "user" | "agent" | "thinking" | "error" | "system" | "tool";
   text: string;
   streaming?: boolean;
   permission?: {
@@ -18,6 +24,15 @@ export interface ChatLine {
     stderr?: string;
     exitCode?: number | null;
     running?: boolean;
+    toolCallId?: string;
+  };
+  /** Tool execution box lifecycle (tool_requested → running → completed/failed). */
+  tool?: {
+    toolCallId: string;
+    toolName: string;
+    status: ExecStatus;
+    detail?: string;
+    error?: string;
   };
   fileChange?: FileChangeView;
 }
@@ -41,8 +56,15 @@ export interface AppState {
   authMessage?: string;
   connecting: boolean;
   running: boolean;
+  /** Agent execution phase (backend events are the source of truth). */
+  phase: AgentPhase;
   sessions: SessionListItem[];
   activeSessionId?: string;
+  /**
+   * True between clicking "New" and the host confirming the active
+   * conversation, so a typed message can never attach to the previous one.
+   */
+  pendingNewConversation: boolean;
   messages: ChatLine[];
   lastPrompt?: string;
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number; costUsd?: number };
@@ -64,7 +86,28 @@ export function createInitialState(): AppState {
     hasKey: false,
     connecting: false,
     running: false,
+    phase: "idle",
     sessions: [],
+    pendingNewConversation: false,
     messages: [],
   };
+}
+
+/** Maps backend AGENT_STATE values onto the UI phase machine. */
+export function phaseFromAgentState(state: string): AgentPhase {
+  switch (state) {
+    case "starting":
+    case "ready":
+      return "submitting";
+    case "running":
+      return "streaming";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return "idle";
+  }
 }

@@ -75,9 +75,9 @@ export type HostToGui =
   | { type: "FILE_CHANGE"; change: FileChangeView }
   | { type: "FILE_CHANGE_REVERTED"; change: FileChangeView }
   | { type: "AGENT_THINKING"; message: string }
-  | { type: "AGENT_TOOL_CALL"; toolCall: { toolName?: string; command?: string; path?: string } }
-  | { type: "AGENT_TOOL_RESULT"; result: { toolName?: string; error?: string } }
-  | { type: "AGENT_COMMAND_OUTPUT"; command: string; cwd?: string; stdout: string; stderr: string; exitCode: number | null }
+  | { type: "AGENT_TOOL_CALL"; toolCall: { toolCallId?: string; toolName?: string; command?: string; path?: string } }
+  | { type: "AGENT_TOOL_RESULT"; result: { toolCallId?: string; toolName?: string; error?: string } }
+  | { type: "AGENT_COMMAND_OUTPUT"; command: string; toolCallId?: string; cwd?: string; stdout: string; stderr: string; exitCode: number | null }
   | { type: "AGENT_ERROR"; error: string }
   | { type: "PERMISSION_REQUEST"; requestId: string; message: string; command?: string; category?: string; destructive?: boolean }
   | { type: "SESSION_UPDATED"; sessions: SessionListItem[]; activeSessionId?: string }

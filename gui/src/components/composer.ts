@@ -60,7 +60,7 @@ export function createComposer(
   function sync(): void {
     const inputDisabled = disabled || running;
     textarea.disabled = inputDisabled;
-    textarea.placeholder = disabled
+    textarea.placeholder = disabled && !running
       ? "Choose an AI provider to start chatting…"
       : running
         ? "The agent is running…"
