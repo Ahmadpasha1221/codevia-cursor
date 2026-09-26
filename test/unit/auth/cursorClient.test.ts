@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CursorClient } from "../../../src/auth/cursorClient";
 import { CursorAuthError } from "../../../src/auth/cursorAuthError";
 import { Agent, Run } from "@cursor/sdk";
@@ -86,5 +86,48 @@ describe("CursorClient", () => {
     const result = await client.waitRun(run);
 
     expect(result).toEqual({ runId: "run-1", agentId: "agent-1", status: "finished" });
+  });
+
+  it("setApiKey is used for subsequent Agent.create calls", async () => {
+    const agent = { agentId: "agent-1", close: vi.fn() };
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+
+    const client = new CursorClient(undefined);
+    client.setApiKey("cursor_test_key");
+    await client.createAgent("Test Agent", "/workspace");
+
+    expect(Agent.create).toHaveBeenCalledWith({
+      name: "Test Agent",
+      local: { cwd: "/workspace" },
+      apiKey: "cursor_test_key",
+    });
+  });
+
+  it("validateConnection creates an agent and returns assistant text", async () => {
+    const run = {
+      id: "run-1",
+      agentId: "agent-1",
+      cancel: vi.fn(),
+      wait: vi.fn().mockResolvedValue({ status: "finished" }),
+      stream: vi.fn(async function* () {
+        yield { type: "assistant", text: "pong" };
+      }),
+    };
+    const agent = { agentId: "agent-1", send: vi.fn().mockResolvedValue(run), close: vi.fn() };
+    vi.mocked(Agent.create).mockResolvedValue(agent);
+    vi.mocked(Agent.resume).mockResolvedValue(agent as unknown as Awaited<ReturnType<typeof Agent.resume>>);
+
+    const client = new CursorClient("cursor_test_key");
+    const message = await client.validateConnection("/workspace");
+
+    expect(message).toBe("pong");
+    expect(agent.close).toHaveBeenCalled();
+  });
+
+  it("validateConnection maps invalid key errors to CursorAuthError", async () => {
+    vi.mocked(Agent.create).mockRejectedValue(new Error("Invalid API key 401"));
+
+    const client = new CursorClient("bad");
+    await expect(client.validateConnection("/workspace")).rejects.toBeInstanceOf(CursorAuthError);
   });
 });
