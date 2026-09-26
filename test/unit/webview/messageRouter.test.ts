@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MessageRouter } from "../../../src/webview/messageRouter";
 import { AgentManager } from "../../../src/agent/agentManager";
 
@@ -107,5 +107,42 @@ describe("MessageRouter", () => {
 
     const router = new MessageRouter(agentManager);
     await expect(router.handleMessage({ type: "UNKNOWN" })).rejects.toThrow("Unknown message type");
+  });
+
+  it("connects through the Cursor connection service", async () => {
+    const agentManager = {
+      startTask: vi.fn(),
+      createSession: vi.fn(),
+      cancelTask: vi.fn(),
+    } as unknown as AgentManager;
+    const connection = {
+      connect: vi.fn().mockResolvedValue({ type: "AUTH_STATUS", status: "connected", hasKey: true, message: "pong" }),
+      disconnect: vi.fn(),
+      getStatus: vi.fn(),
+      restore: vi.fn(),
+    };
+
+    const router = new MessageRouter(agentManager, ".", connection);
+    const result = await router.handleMessage({ type: "CONNECT_CURSOR", apiKey: "cursor_test" });
+
+    expect(connection.connect).toHaveBeenCalledWith("cursor_test");
+    expect(result).toEqual({ type: "AUTH_STATUS", status: "connected", hasKey: true, message: "pong" });
+    expect(JSON.stringify(result)).not.toContain("cursor_test");
+  });
+
+  it("maps assistant events to AGENT_MESSAGE", () => {
+    const agentManager = {
+      startTask: vi.fn(),
+      createSession: vi.fn(),
+      cancelTask: vi.fn(),
+    } as unknown as AgentManager;
+    const router = new MessageRouter(agentManager);
+    const message = router.toExtensionMessage({
+      type: "assistant_message",
+      sessionId: "session-1",
+      message: "pong",
+      timestamp: 1,
+    });
+    expect(message).toEqual({ type: "AGENT_MESSAGE", message: "pong" });
   });
 });

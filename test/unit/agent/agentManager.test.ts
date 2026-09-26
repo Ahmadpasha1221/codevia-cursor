@@ -89,6 +89,8 @@ function makeCursorClient(
 ): CursorClient {
   const waitPromise = runPromise ?? Promise.resolve({ status: "finished" });
   return {
+    hasApiKey: vi.fn().mockReturnValue(true),
+    setApiKey: vi.fn(),
     createAgent: vi.fn().mockResolvedValue({ agentId: "agent-1", close: vi.fn() }),
     sendMessage: vi.fn().mockResolvedValue({
       id: "run-1",
@@ -290,7 +292,7 @@ describe("AgentManager", () => {
     expect(cursorClient.createAgent).toHaveBeenCalledWith({
       name: "session-" + session.sessionId,
       workspacePath: "/workspace",
-      disallowedTools: ["delete", "applyAgentDiff"],
+      disallowedTools: ["delete", "applyAgentDiff", "mcp", "webFetch", "webSearch", "semSearch"],
     });
     expect(events.some((e) => (e as { type: string }).type === "agent_started")).toBe(true);
     expect(events.some((e) => (e as { type: string }).type === "agent_completed")).toBe(true);
@@ -483,5 +485,37 @@ describe("AgentManager", () => {
     const permissionEvent = events.find((event) => (event as { type?: string }).type === "agent_permission");
     expect(JSON.stringify(permissionEvent)).not.toContain("apiKey");
     expect(JSON.stringify(permissionEvent)).not.toContain("token");
+  });
+
+  it("publishes assistant stream text", async () => {
+    const { store } = createStore();
+    const cursorClient = makeCursorClient(undefined, [
+      {
+        kind: "assistant",
+        message: { type: "assistant", text: "Hello from Cursor" },
+      },
+    ]);
+    const manager = new AgentManager(cursorClient, store, makePermissionManager());
+    const session = manager.createSession("/workspace");
+    const events: unknown[] = [];
+    manager.onDidPublishEvent((event) => events.push(event));
+
+    await manager.startTask(session.sessionId, "Hi");
+
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "assistant_message", message: "Hello from Cursor" }),
+      ]),
+    );
+  });
+
+  it("rejects startTask when no API key is configured", async () => {
+    const { store } = createStore();
+    const cursorClient = makeCursorClient();
+    vi.mocked(cursorClient.hasApiKey).mockReturnValue(false);
+    const manager = new AgentManager(cursorClient, store, makePermissionManager());
+    const session = manager.createSession("/workspace");
+
+    await expect(manager.startTask(session.sessionId, "Hi")).rejects.toThrow("Connect a Cursor API key");
   });
 });
