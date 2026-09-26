@@ -68,7 +68,8 @@ describe("runInferenceAgentLoop", () => {
 
     expect(onToolCall).toHaveBeenCalledTimes(1);
     const firstMessages = completeChat.mock.calls[0]?.[0] as Array<{ role: string; content: string }>;
-    expect(firstMessages[0]?.content).toContain("cannot use native tool calls");
+    expect(firstMessages[0]?.content).toContain("AVAILABLE TOOLS");
+    expect(firstMessages[0]?.content).toContain('"write_file"');
     expect(firstMessages[0]?.content).not.toContain("<tool_call>");
   });
 
